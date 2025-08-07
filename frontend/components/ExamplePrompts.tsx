@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { FileCode, Database, Globe, GitBranch } from "lucide-react";
+import { FileCode, Database, Globe, GitBranch, Server } from "lucide-react";
 
 interface ExamplePromptsProps {
   onSelectPrompt: (prompt: string) => void;
@@ -26,6 +26,11 @@ export function ExamplePrompts({ onSelectPrompt }: ExamplePromptsProps) {
       icon: GitBranch,
       title: "Git Repository Access",
       prompt: "I want to create an MCP server that can interact with Git repositories - reading file contents, getting commit history, and checking branch information."
+    },
+    {
+      icon: Server,
+      title: "MCP Client Development",
+      prompt: "How do I build an MCP client that can connect to multiple servers and provide a command-line interface for interacting with them?"
     }
   ];
 

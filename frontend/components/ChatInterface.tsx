@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Loader2, Download } from "lucide-react";
+import { Send, Bot, User, Loader2, Download, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
@@ -8,9 +8,10 @@ import type { ChatMessage } from "./types";
 import { MessageBubble } from "./MessageBubble";
 import { ExamplePrompts } from "./ExamplePrompts";
 import { GenerateServerForm } from "./GenerateServerForm";
+import { GenerateClientForm } from "./GenerateClientForm";
 import { GeneratedFiles } from "./GeneratedFiles";
 
-type ViewMode = "chat" | "generate" | "files";
+type ViewMode = "chat" | "generate-server" | "generate-client" | "files";
 
 interface ProjectFile {
   path: string;
@@ -83,11 +84,15 @@ export function ChatInterface() {
     setViewMode("chat");
   };
 
-  const handleBackToGenerate = () => {
-    setViewMode("generate");
+  const handleBackToGenerateServer = () => {
+    setViewMode("generate-server");
   };
 
-  if (viewMode === "generate") {
+  const handleBackToGenerateClient = () => {
+    setViewMode("generate-client");
+  };
+
+  if (viewMode === "generate-server") {
     return (
       <div className="flex flex-col h-full">
         <div className="border-b border-gray-200 p-4">
@@ -106,6 +111,25 @@ export function ChatInterface() {
     );
   }
 
+  if (viewMode === "generate-client") {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="border-b border-gray-200 p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Generate MCP Client</h2>
+            <Button variant="outline" onClick={handleBackToChat}>
+              Back to Chat
+            </Button>
+          </div>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-6">
+          <GenerateClientForm onGenerated={handleGenerated} />
+        </div>
+      </div>
+    );
+  }
+
   if (viewMode === "files") {
     return (
       <div className="flex flex-col h-full">
@@ -113,8 +137,11 @@ export function ChatInterface() {
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Generated Files</h2>
             <div className="flex space-x-2">
-              <Button variant="outline" onClick={handleBackToGenerate}>
-                Back to Generator
+              <Button variant="outline" onClick={handleBackToGenerateServer}>
+                Back to Server Generator
+              </Button>
+              <Button variant="outline" onClick={handleBackToGenerateClient}>
+                Back to Client Generator
               </Button>
               <Button variant="outline" onClick={handleBackToChat}>
                 Back to Chat
@@ -127,7 +154,7 @@ export function ChatInterface() {
           <GeneratedFiles 
             files={generatedFiles}
             instructions={setupInstructions}
-            onBack={handleBackToGenerate}
+            onBack={handleBackToGenerateServer}
           />
         </div>
       </div>
@@ -136,14 +163,20 @@ export function ChatInterface() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header with Generate Button */}
+      {/* Header with Generate Buttons */}
       <div className="border-b border-gray-200 p-4">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">MCP Assistant Chat</h2>
-          <Button onClick={() => setViewMode("generate")}>
-            <Download className="h-4 w-4 mr-2" />
-            Generate Server
-          </Button>
+          <div className="flex space-x-2">
+            <Button onClick={() => setViewMode("generate-server")}>
+              <Download className="h-4 w-4 mr-2" />
+              Generate Server
+            </Button>
+            <Button variant="outline" onClick={() => setViewMode("generate-client")}>
+              <Server className="h-4 w-4 mr-2" />
+              Generate Client
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -158,7 +191,7 @@ export function ChatInterface() {
               </h2>
               <p className="text-gray-600 max-w-md">
                 I'm here to help you build MCP (Model Context Protocol) servers and clients. 
-                Ask me anything about MCP development or use the generator to create boilerplate code!
+                Ask me anything about MCP development or use the generators to create boilerplate code!
               </p>
             </div>
             
