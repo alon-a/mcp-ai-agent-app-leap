@@ -83,6 +83,8 @@ export interface ClientOptions {
  * Import the endpoint handlers to derive the types for the client.
  */
 import { chat as api_ai_chat_chat } from "~backend/ai/chat";
+import { generate as api_ai_generate_generate } from "~backend/ai/generate";
+import { generateClient as api_ai_generate_client_generateClient } from "~backend/ai/generate-client";
 
 export namespace ai {
 
@@ -92,6 +94,8 @@ export namespace ai {
         constructor(baseClient: BaseClient) {
             this.baseClient = baseClient
             this.chat = this.chat.bind(this)
+            this.generate = this.generate.bind(this)
+            this.generateClient = this.generateClient.bind(this)
         }
 
         /**
@@ -101,6 +105,24 @@ export namespace ai {
             // Now make the actual call to the API
             const resp = await this.baseClient.callTypedAPI(`/chat`, {method: "POST", body: JSON.stringify(params)})
             return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_ai_chat_chat>
+        }
+
+        /**
+         * Generates complete MCP server boilerplate code based on user requirements.
+         */
+        public async generate(params: RequestType<typeof api_ai_generate_generate>): Promise<ResponseType<typeof api_ai_generate_generate>> {
+            // Now make the actual call to the API
+            const resp = await this.baseClient.callTypedAPI(`/generate`, {method: "POST", body: JSON.stringify(params)})
+            return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_ai_generate_generate>
+        }
+
+        /**
+         * Generates complete MCP client boilerplate code based on user requirements.
+         */
+        public async generateClient(params: RequestType<typeof api_ai_generate_client_generateClient>): Promise<ResponseType<typeof api_ai_generate_client_generateClient>> {
+            // Now make the actual call to the API
+            const resp = await this.baseClient.callTypedAPI(`/generate-client`, {method: "POST", body: JSON.stringify(params)})
+            return JSON.parse(await resp.text(), dateReviver) as ResponseType<typeof api_ai_generate_client_generateClient>
         }
     }
 }

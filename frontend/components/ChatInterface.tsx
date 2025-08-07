@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Loader2 } from "lucide-react";
+import { Send, Bot, User, Loader2, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
@@ -7,11 +7,23 @@ import backend from "~backend/client";
 import type { ChatMessage } from "./types";
 import { MessageBubble } from "./MessageBubble";
 import { ExamplePrompts } from "./ExamplePrompts";
+import { GenerateServerForm } from "./GenerateServerForm";
+import { GeneratedFiles } from "./GeneratedFiles";
+
+type ViewMode = "chat" | "generate" | "files";
+
+interface ProjectFile {
+  path: string;
+  content: string;
+}
 
 export function ChatInterface() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("chat");
+  const [generatedFiles, setGeneratedFiles] = useState<ProjectFile[]>([]);
+  const [setupInstructions, setSetupInstructions] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -61,8 +73,80 @@ export function ChatInterface() {
     }
   };
 
+  const handleGenerated = (files: ProjectFile[], instructions: string) => {
+    setGeneratedFiles(files);
+    setSetupInstructions(instructions);
+    setViewMode("files");
+  };
+
+  const handleBackToChat = () => {
+    setViewMode("chat");
+  };
+
+  const handleBackToGenerate = () => {
+    setViewMode("generate");
+  };
+
+  if (viewMode === "generate") {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="border-b border-gray-200 p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Generate MCP Server</h2>
+            <Button variant="outline" onClick={handleBackToChat}>
+              Back to Chat
+            </Button>
+          </div>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-6">
+          <GenerateServerForm onGenerated={handleGenerated} />
+        </div>
+      </div>
+    );
+  }
+
+  if (viewMode === "files") {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="border-b border-gray-200 p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Generated Files</h2>
+            <div className="flex space-x-2">
+              <Button variant="outline" onClick={handleBackToGenerate}>
+                Back to Generator
+              </Button>
+              <Button variant="outline" onClick={handleBackToChat}>
+                Back to Chat
+              </Button>
+            </div>
+          </div>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-6">
+          <GeneratedFiles 
+            files={generatedFiles}
+            instructions={setupInstructions}
+            onBack={handleBackToGenerate}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full">
+      {/* Header with Generate Button */}
+      <div className="border-b border-gray-200 p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">MCP Assistant Chat</h2>
+          <Button onClick={() => setViewMode("generate")}>
+            <Download className="h-4 w-4 mr-2" />
+            Generate Server
+          </Button>
+        </div>
+      </div>
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 ? (
@@ -74,7 +158,7 @@ export function ChatInterface() {
               </h2>
               <p className="text-gray-600 max-w-md">
                 I'm here to help you build MCP (Model Context Protocol) servers and clients. 
-                Ask me anything about MCP development!
+                Ask me anything about MCP development or use the generator to create boilerplate code!
               </p>
             </div>
             
