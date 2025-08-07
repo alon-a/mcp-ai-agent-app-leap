@@ -25,6 +25,7 @@ export function ChatInterface() {
   const [viewMode, setViewMode] = useState<ViewMode>("chat");
   const [generatedFiles, setGeneratedFiles] = useState<ProjectFile[]>([]);
   const [setupInstructions, setSetupInstructions] = useState("");
+  const [projectType, setProjectType] = useState<"server" | "client">("server");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -74,9 +75,10 @@ export function ChatInterface() {
     }
   };
 
-  const handleGenerated = (files: ProjectFile[], instructions: string) => {
+  const handleGenerated = (files: ProjectFile[], instructions: string, type: "server" | "client" = "server") => {
     setGeneratedFiles(files);
     setSetupInstructions(instructions);
+    setProjectType(type);
     setViewMode("files");
   };
 
@@ -105,7 +107,7 @@ export function ChatInterface() {
         </div>
         
         <div className="flex-1 overflow-y-auto p-6">
-          <GenerateServerForm onGenerated={handleGenerated} />
+          <GenerateServerForm onGenerated={(files, instructions) => handleGenerated(files, instructions, "server")} />
         </div>
       </div>
     );
@@ -124,7 +126,7 @@ export function ChatInterface() {
         </div>
         
         <div className="flex-1 overflow-y-auto p-6">
-          <GenerateClientForm onGenerated={handleGenerated} />
+          <GenerateClientForm onGenerated={(files, instructions) => handleGenerated(files, instructions, "client")} />
         </div>
       </div>
     );
@@ -154,7 +156,8 @@ export function ChatInterface() {
           <GeneratedFiles 
             files={generatedFiles}
             instructions={setupInstructions}
-            onBack={handleBackToGenerateServer}
+            onBack={projectType === "client" ? handleBackToGenerateClient : handleBackToGenerateServer}
+            projectType={projectType}
           />
         </div>
       </div>

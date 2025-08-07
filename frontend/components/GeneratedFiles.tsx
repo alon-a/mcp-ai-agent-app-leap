@@ -16,9 +16,10 @@ interface GeneratedFilesProps {
   files: ProjectFile[];
   instructions: string;
   onBack: () => void;
+  projectType?: "server" | "client";
 }
 
-export function GeneratedFiles({ files, instructions, onBack }: GeneratedFilesProps) {
+export function GeneratedFiles({ files, instructions, onBack, projectType = "server" }: GeneratedFilesProps) {
   const [copiedFile, setCopiedFile] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
   const { toast } = useToast();
@@ -44,7 +45,7 @@ export function GeneratedFiles({ files, instructions, onBack }: GeneratedFilesPr
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "mcp-server-files.txt";
+    a.download = `mcp-${projectType}-files.txt`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -88,6 +89,8 @@ export function GeneratedFiles({ files, instructions, onBack }: GeneratedFilesPr
     }
   };
 
+  const title = projectType === "client" ? "Generated MCP Client" : "Generated MCP Server";
+
   return (
     <div className="w-full max-w-6xl mx-auto space-y-6">
       {/* Header */}
@@ -97,7 +100,7 @@ export function GeneratedFiles({ files, instructions, onBack }: GeneratedFilesPr
             <div>
               <CardTitle className="flex items-center space-x-2">
                 <Package className="h-5 w-5" />
-                <span>Generated MCP Server</span>
+                <span>{title}</span>
               </CardTitle>
               <CardDescription>
                 {files.length} files generated successfully
@@ -190,7 +193,7 @@ export function GeneratedFiles({ files, instructions, onBack }: GeneratedFilesPr
             <CardHeader>
               <CardTitle>Setup Instructions</CardTitle>
               <CardDescription>
-                Follow these steps to set up and run your MCP server
+                Follow these steps to set up and run your MCP {projectType}
               </CardDescription>
             </CardHeader>
             
