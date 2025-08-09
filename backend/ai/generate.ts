@@ -379,7 +379,6 @@ async function main() {
   await server.run();
 }
 
-import { pathToFileURL } from "url";
 const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
   main().catch(console.error);
