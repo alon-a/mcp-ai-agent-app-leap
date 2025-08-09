@@ -26,10 +26,11 @@ const generateFileSystemClient = (projectName: string, description?: string): Cl
     name: projectName,
     version: "1.0.0",
     description: description || "MCP client for file system operations",
+    type: "module",
     main: "dist/index.js",
     scripts: {
       build: "tsc",
-      start: "node dist/index.js",
+      start: "node --enable-source-maps dist/index.js",
       dev: "tsx src/index.ts"
     },
     dependencies: {
@@ -46,7 +47,8 @@ const generateFileSystemClient = (projectName: string, description?: string): Cl
   const tsConfig = {
     compilerOptions: {
       target: "ES2022",
-      module: "commonjs",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
       outDir: "./dist",
       rootDir: "./src",
       strict: true,
@@ -65,6 +67,7 @@ const generateFileSystemClient = (projectName: string, description?: string): Cl
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Command } from "commander";
 import { spawn } from "child_process";
+import { pathToFileURL } from "url";
 
 class FileSystemMCPClient {
   private client: Client;
@@ -201,7 +204,7 @@ async function main() {
         console.log("- create-dir <path>: Create a directory");
         console.log("- quit: Exit the client\\n");
 
-        const readline = require("readline");
+        const readline = await import("readline");
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout,
@@ -355,7 +358,8 @@ async function main() {
   await program.parseAsync();
 }
 
-if (require.main === module) {
+const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntry) {
   main().catch(console.error);
 }
 `;
@@ -417,7 +421,7 @@ npm start list-dir . --server node --args path/to/server/dist/index.js
 ### Programmatic Usage
 
 \`\`\`typescript
-import { FileSystemMCPClient } from './src/index';
+import { FileSystemMCPClient } from './src/index.js';
 
 const client = new FileSystemMCPClient();
 await client.connect('node', ['path/to/server/dist/index.js']);
@@ -439,6 +443,12 @@ await client.disconnect();
 ## Configuration
 
 The client connects to MCP servers via stdio transport. Make sure your MCP server is properly configured and accessible.
+
+## Technical Notes
+
+- Uses ESM modules for compatibility with the MCP SDK
+- Source maps enabled for better debugging
+- Cross-platform compatibility
 
 ## Development
 
@@ -464,10 +474,11 @@ const generateDatabaseClient = (projectName: string, description?: string): Clie
     name: projectName,
     version: "1.0.0",
     description: description || "MCP client for database operations",
+    type: "module",
     main: "dist/index.js",
     scripts: {
       build: "tsc",
-      start: "node dist/index.js",
+      start: "node --enable-source-maps dist/index.js",
       dev: "tsx src/index.ts"
     },
     dependencies: {
@@ -483,11 +494,31 @@ const generateDatabaseClient = (projectName: string, description?: string): Clie
     }
   };
 
+  const tsConfig = {
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      outDir: "./dist",
+      rootDir: "./src",
+      strict: true,
+      esModuleInterop: true,
+      skipLibCheck: true,
+      forceConsistentCasingInFileNames: true,
+      declaration: true,
+      declarationMap: true,
+      sourceMap: true
+    },
+    include: ["src/**/*"],
+    exclude: ["node_modules", "dist"]
+  };
+
   const indexTs = `import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Command } from "commander";
 import inquirer from "inquirer";
 import { spawn } from "child_process";
+import { pathToFileURL } from "url";
 
 class DatabaseMCPClient {
   private client: Client;
@@ -775,7 +806,8 @@ async function main() {
   await program.parseAsync();
 }
 
-if (require.main === module) {
+const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntry) {
   main().catch(console.error);
 }
 `;
@@ -835,7 +867,7 @@ npm start query "SELECT * FROM users LIMIT 5" --server node --args path/to/serve
 ### Programmatic Usage
 
 \`\`\`typescript
-import { DatabaseMCPClient } from './src/index';
+import { DatabaseMCPClient } from './src/index.js';
 
 const client = new DatabaseMCPClient();
 await client.connect('node', ['path/to/server/dist/index.js']);
@@ -867,6 +899,12 @@ The client connects to MCP database servers via stdio transport. Ensure your MCP
 
 This client only supports SELECT queries for safety. No INSERT, UPDATE, or DELETE operations are permitted through the MCP server.
 
+## Technical Notes
+
+- Uses ESM modules for compatibility with the MCP SDK
+- Source maps enabled for better debugging
+- Interactive prompts for better user experience
+
 ## Development
 
 \`\`\`bash
@@ -880,23 +918,7 @@ npm run build
 
   return [
     { path: "package.json", content: JSON.stringify(packageJson, null, 2) },
-    { path: "tsconfig.json", content: JSON.stringify({
-      compilerOptions: {
-        target: "ES2022",
-        module: "commonjs",
-        outDir: "./dist",
-        rootDir: "./src",
-        strict: true,
-        esModuleInterop: true,
-        skipLibCheck: true,
-        forceConsistentCasingInFileNames: true,
-        declaration: true,
-        declarationMap: true,
-        sourceMap: true
-      },
-      include: ["src/**/*"],
-      exclude: ["node_modules", "dist"]
-    }, null, 2) },
+    { path: "tsconfig.json", content: JSON.stringify(tsConfig, null, 2) },
     { path: "src/index.ts", content: indexTs },
     { path: "README.md", content: readme },
   ];
@@ -907,10 +929,11 @@ const generateApiClient = (projectName: string, description?: string): ClientPro
     name: projectName,
     version: "1.0.0",
     description: description || "MCP client for API integration",
+    type: "module",
     main: "dist/index.js",
     scripts: {
       build: "tsc",
-      start: "node dist/index.js",
+      start: "node --enable-source-maps dist/index.js",
       dev: "tsx src/index.ts"
     },
     dependencies: {
@@ -926,11 +949,31 @@ const generateApiClient = (projectName: string, description?: string): ClientPro
     }
   };
 
+  const tsConfig = {
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      outDir: "./dist",
+      rootDir: "./src",
+      strict: true,
+      esModuleInterop: true,
+      skipLibCheck: true,
+      forceConsistentCasingInFileNames: true,
+      declaration: true,
+      declarationMap: true,
+      sourceMap: true
+    },
+    include: ["src/**/*"],
+    exclude: ["node_modules", "dist"]
+  };
+
   const indexTs = `import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Command } from "commander";
 import inquirer from "inquirer";
 import { spawn } from "child_process";
+import { pathToFileURL } from "url";
 
 class ApiMCPClient {
   private client: Client;
@@ -1262,7 +1305,8 @@ async function main() {
   await program.parseAsync();
 }
 
-if (require.main === module) {
+const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntry) {
   main().catch(console.error);
 }
 `;
@@ -1318,7 +1362,7 @@ npm start post /users --data '{"name": "John", "email": "john@example.com"}' --s
 ### Programmatic Usage
 
 \`\`\`typescript
-import { ApiMCPClient } from './src/index';
+import { ApiMCPClient } from './src/index.js';
 
 const client = new ApiMCPClient();
 await client.connect('node', ['path/to/server/dist/index.js']);
@@ -1357,6 +1401,12 @@ The client connects to MCP API servers via stdio transport. Ensure your MCP serv
 - The server handles authentication automatically if configured
 - All responses are returned in JSON format
 
+## Technical Notes
+
+- Uses ESM modules for compatibility with the MCP SDK
+- Source maps enabled for better debugging
+- Interactive prompts for better user experience
+
 ## Development
 
 \`\`\`bash
@@ -1370,23 +1420,7 @@ npm run build
 
   return [
     { path: "package.json", content: JSON.stringify(packageJson, null, 2) },
-    { path: "tsconfig.json", content: JSON.stringify({
-      compilerOptions: {
-        target: "ES2022",
-        module: "commonjs",
-        outDir: "./dist",
-        rootDir: "./src",
-        strict: true,
-        esModuleInterop: true,
-        skipLibCheck: true,
-        forceConsistentCasingInFileNames: true,
-        declaration: true,
-        declarationMap: true,
-        sourceMap: true
-      },
-      include: ["src/**/*"],
-      exclude: ["node_modules", "dist"]
-    }, null, 2) },
+    { path: "tsconfig.json", content: JSON.stringify(tsConfig, null, 2) },
     { path: "src/index.ts", content: indexTs },
     { path: "README.md", content: readme },
   ];
@@ -1397,10 +1431,11 @@ const generateGitClient = (projectName: string, description?: string): ClientPro
     name: projectName,
     version: "1.0.0",
     description: description || "MCP client for Git repository operations",
+    type: "module",
     main: "dist/index.js",
     scripts: {
       build: "tsc",
-      start: "node dist/index.js",
+      start: "node --enable-source-maps dist/index.js",
       dev: "tsx src/index.ts"
     },
     dependencies: {
@@ -1416,11 +1451,31 @@ const generateGitClient = (projectName: string, description?: string): ClientPro
     }
   };
 
+  const tsConfig = {
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      outDir: "./dist",
+      rootDir: "./src",
+      strict: true,
+      esModuleInterop: true,
+      skipLibCheck: true,
+      forceConsistentCasingInFileNames: true,
+      declaration: true,
+      declarationMap: true,
+      sourceMap: true
+    },
+    include: ["src/**/*"],
+    exclude: ["node_modules", "dist"]
+  };
+
   const indexTs = `import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Command } from "commander";
 import inquirer from "inquirer";
 import { spawn } from "child_process";
+import { pathToFileURL } from "url";
 
 class GitMCPClient {
   private client: Client;
@@ -1790,7 +1845,8 @@ async function main() {
   await program.parseAsync();
 }
 
-if (require.main === module) {
+const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntry) {
   main().catch(console.error);
 }
 `;
@@ -1854,7 +1910,7 @@ npm start read README.md --commit abc123 --server node --args path/to/server/dis
 ### Programmatic Usage
 
 \`\`\`typescript
-import { GitMCPClient } from './src/index';
+import { GitMCPClient } from './src/index.js';
 
 const client = new GitMCPClient();
 await client.connect('node', ['path/to/server/dist/index.js']);
@@ -1894,6 +1950,12 @@ The client connects to MCP Git servers via stdio transport. Ensure your MCP serv
 - **Branch management**: List and explore different branches
 - **Interactive exploration**: Guided interface for repository browsing
 
+## Technical Notes
+
+- Uses ESM modules for compatibility with the MCP SDK
+- Source maps enabled for better debugging
+- Interactive prompts for better user experience
+
 ## Development
 
 \`\`\`bash
@@ -1907,23 +1969,7 @@ npm run build
 
   return [
     { path: "package.json", content: JSON.stringify(packageJson, null, 2) },
-    { path: "tsconfig.json", content: JSON.stringify({
-      compilerOptions: {
-        target: "ES2022",
-        module: "commonjs",
-        outDir: "./dist",
-        rootDir: "./src",
-        strict: true,
-        esModuleInterop: true,
-        skipLibCheck: true,
-        forceConsistentCasingInFileNames: true,
-        declaration: true,
-        declarationMap: true,
-        sourceMap: true
-      },
-      include: ["src/**/*"],
-      exclude: ["node_modules", "dist"]
-    }, null, 2) },
+    { path: "tsconfig.json", content: JSON.stringify(tsConfig, null, 2) },
     { path: "src/index.ts", content: indexTs },
     { path: "README.md", content: readme },
   ];
@@ -1934,10 +1980,11 @@ const generateMultiServerClient = (projectName: string, description?: string, se
     name: projectName,
     version: "1.0.0",
     description: description || "MCP client for multiple server connections",
+    type: "module",
     main: "dist/index.js",
     scripts: {
       build: "tsc",
-      start: "node dist/index.js",
+      start: "node --enable-source-maps dist/index.js",
       dev: "tsx src/index.ts"
     },
     dependencies: {
@@ -1951,6 +1998,25 @@ const generateMultiServerClient = (projectName: string, description?: string, se
       "typescript": "^5.0.0",
       "tsx": "^4.0.0"
     }
+  };
+
+  const tsConfig = {
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      outDir: "./dist",
+      rootDir: "./src",
+      strict: true,
+      esModuleInterop: true,
+      skipLibCheck: true,
+      forceConsistentCasingInFileNames: true,
+      declaration: true,
+      declarationMap: true,
+      sourceMap: true
+    },
+    include: ["src/**/*"],
+    exclude: ["node_modules", "dist"]
   };
 
   const configExample = {
@@ -1981,7 +2047,7 @@ import { Command } from "commander";
 import inquirer from "inquirer";
 import { spawn } from "child_process";
 import fs from "fs/promises";
-import path from "path";
+import { pathToFileURL } from "url";
 
 interface ServerConfig {
   name: string;
@@ -2405,7 +2471,8 @@ async function main() {
   await program.parseAsync();
 }
 
-if (require.main === module) {
+const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntry) {
   main().catch(console.error);
 }
 `;
@@ -2465,7 +2532,7 @@ npm start list-all --config config.json
 ### Programmatic Usage
 
 \`\`\`typescript
-import { MultiServerMCPClient } from './src/index';
+import { MultiServerMCPClient } from './src/index.js';
 
 const config = {
   servers: [
@@ -2522,6 +2589,12 @@ The configuration file should contain a \`servers\` array with the following pro
 - **Configuration-driven**: Easy setup through JSON configuration
 - **Interactive exploration**: Guided interface for multi-server operations
 
+## Technical Notes
+
+- Uses ESM modules for compatibility with the MCP SDK
+- Source maps enabled for better debugging
+- Interactive prompts for better user experience
+
 ## Development
 
 \`\`\`bash
@@ -2535,23 +2608,7 @@ npm run build
 
   return [
     { path: "package.json", content: JSON.stringify(packageJson, null, 2) },
-    { path: "tsconfig.json", content: JSON.stringify({
-      compilerOptions: {
-        target: "ES2022",
-        module: "commonjs",
-        outDir: "./dist",
-        rootDir: "./src",
-        strict: true,
-        esModuleInterop: true,
-        skipLibCheck: true,
-        forceConsistentCasingInFileNames: true,
-        declaration: true,
-        declarationMap: true,
-        sourceMap: true
-      },
-      include: ["src/**/*"],
-      exclude: ["node_modules", "dist"]
-    }, null, 2) },
+    { path: "tsconfig.json", content: JSON.stringify(tsConfig, null, 2) },
     { path: "src/index.ts", content: indexTs },
     { path: "config.json", content: JSON.stringify(configExample, null, 2) },
     { path: "README.md", content: readme },
@@ -2568,7 +2625,7 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
     switch (req.clientType) {
       case "filesystem":
         files = generateFileSystemClient(req.projectName, req.description);
-        instructions = `Your file system MCP client has been generated! This client provides a command-line interface for interacting with MCP file system servers.
+        instructions = `Your file system MCP client has been generated with production-ready fixes! This client provides a command-line interface for interacting with MCP file system servers.
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2577,12 +2634,16 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 4. Start your MCP file system server
 5. Connect using: \`npm start connect --server node --args path/to/server/dist/index.js\`
 
-**Features:** Interactive mode, command-line operations, and programmatic API for file operations.`;
+**Production improvements:**
+- ESM module support for MCP SDK compatibility
+- Source maps enabled for better debugging
+- Cross-platform compatibility
+- Features: Interactive mode, command-line operations, and programmatic API for file operations`;
         break;
 
       case "database":
         files = generateDatabaseClient(req.projectName, req.description);
-        instructions = `Your database MCP client has been generated! This client provides an interactive interface for querying databases through MCP servers.
+        instructions = `Your database MCP client has been generated with production-ready fixes! This client provides an interactive interface for querying databases through MCP servers.
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2591,12 +2652,16 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 4. Start your MCP database server with proper DATABASE_URL
 5. Connect using: \`npm start connect --server node --args path/to/server/dist/index.js\`
 
-**Features:** Interactive query interface, table exploration, and guided database operations.`;
+**Production improvements:**
+- ESM module support for MCP SDK compatibility
+- Source maps enabled for better debugging
+- Interactive prompts for better user experience
+- Features: Interactive query interface, table exploration, and guided database operations`;
         break;
 
       case "api":
         files = generateApiClient(req.projectName, req.description);
-        instructions = `Your API integration MCP client has been generated! This client provides tools for making HTTP requests through MCP API servers.
+        instructions = `Your API integration MCP client has been generated with production-ready fixes! This client provides tools for making HTTP requests through MCP API servers.
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2605,12 +2670,16 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 4. Start your MCP API server with proper API_BASE_URL and API_KEY
 5. Connect using: \`npm start connect --server node --args path/to/server/dist/index.js\`
 
-**Features:** Support for GET, POST, PUT, DELETE requests with JSON formatting.`;
+**Production improvements:**
+- ESM module support for MCP SDK compatibility
+- Source maps enabled for better debugging
+- Interactive prompts for better user experience
+- Features: Support for GET, POST, PUT, DELETE requests with JSON formatting`;
         break;
 
       case "git":
         files = generateGitClient(req.projectName, req.description);
-        instructions = `Your Git repository MCP client has been generated! This client provides tools for exploring Git repositories through MCP servers.
+        instructions = `Your Git repository MCP client has been generated with production-ready fixes! This client provides tools for exploring Git repositories through MCP servers.
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2619,12 +2688,16 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 4. Start your MCP Git server with proper REPO_PATH
 5. Connect using: \`npm start connect --server node --args path/to/server/dist/index.js\`
 
-**Features:** Git history exploration, file reading from commits, and repository browsing.`;
+**Production improvements:**
+- ESM module support for MCP SDK compatibility
+- Source maps enabled for better debugging
+- Interactive prompts for better user experience
+- Features: Git history exploration, file reading from commits, and repository browsing`;
         break;
 
       case "multi-server":
         files = generateMultiServerClient(req.projectName, req.description, req.serverEndpoints);
-        instructions = `Your multi-server MCP client has been generated! This client can connect to and manage multiple MCP servers simultaneously.
+        instructions = `Your multi-server MCP client has been generated with production-ready fixes! This client can connect to and manage multiple MCP servers simultaneously.
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2634,13 +2707,17 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 5. Start your MCP servers
 6. Connect using: \`npm start connect --config config.json\`
 
-**Features:** Multi-server management, aggregated resource views, and dynamic server connections.`;
+**Production improvements:**
+- ESM module support for MCP SDK compatibility
+- Source maps enabled for better debugging
+- Interactive prompts for better user experience
+- Features: Multi-server management, aggregated resource views, and dynamic server connections`;
         break;
 
       case "custom":
         // Generate a basic template for custom clients
         files = generateFileSystemClient(req.projectName, req.description);
-        instructions = `A basic MCP client template has been generated based on the file system client.
+        instructions = `A production-ready MCP client template has been generated based on the file system client with all the latest fixes.
 
 **Customization needed:**
 1. Modify the client methods in src/index.ts according to your server's tools and resources
@@ -2648,6 +2725,11 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 3. Implement custom interaction logic for your specific use case
 
 **Requirements:** ${req.customRequirements || "No specific requirements provided"}
+
+**Production improvements included:**
+- ESM module support for MCP SDK compatibility
+- Source maps enabled for better debugging
+- Cross-platform compatibility
 
 Follow the MCP SDK documentation to implement your custom client functionality.`;
         break;

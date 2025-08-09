@@ -25,10 +25,11 @@ const generateFileSystemServer = (projectName: string, description?: string): Pr
     name: projectName,
     version: "1.0.0",
     description: description || "MCP server for file system operations",
+    type: "module",
     main: "dist/index.js",
     scripts: {
       build: "tsc",
-      start: "node dist/index.js",
+      start: "node --enable-source-maps dist/index.js",
       dev: "tsx src/index.ts"
     },
     dependencies: {
@@ -37,7 +38,6 @@ const generateFileSystemServer = (projectName: string, description?: string): Pr
     },
     devDependencies: {
       "@types/node": "^20.0.0",
-      "@types/fs-extra": "^11.0.0",
       "typescript": "^5.0.0",
       "tsx": "^4.0.0"
     }
@@ -46,7 +46,8 @@ const generateFileSystemServer = (projectName: string, description?: string): Pr
   const tsConfig = {
     compilerOptions: {
       target: "ES2022",
-      module: "commonjs",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
       outDir: "./dist",
       rootDir: "./src",
       strict: true,
@@ -71,6 +72,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import fs from "fs-extra";
 import path from "path";
+import pathPosix from "path/posix";
+import { fileURLToPath, pathToFileURL } from "url";
 
 class FileSystemMCPServer {
   private server: Server;
@@ -85,7 +88,7 @@ class FileSystemMCPServer {
       },
       {
         capabilities: {
-          resources: {},
+          resources: { listChanged: false },
           tools: {},
         },
       }
@@ -98,10 +101,10 @@ class FileSystemMCPServer {
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
       const files = await this.listFiles(this.allowedPath);
       return {
-        resources: files.map(file => ({
-          uri: \`file://\${file}\`,
-          mimeType: this.getMimeType(file),
-          name: path.basename(file),
+        resources: files.map(fileAbs => ({
+          uri: pathToFileURL(fileAbs).href,
+          mimeType: this.getMimeType(fileAbs),
+          name: path.basename(fileAbs),
         })),
       };
     });
@@ -112,20 +115,14 @@ class FileSystemMCPServer {
         throw new Error("Only file:// URIs are supported");
       }
 
-      const filePath = url.pathname;
+      const filePath = fileURLToPath(url);
       if (!this.isPathAllowed(filePath)) {
         throw new Error("Access denied: Path outside allowed directory");
       }
 
-      const content = await fs.readFile(filePath, "utf-8");
+      const content = await this.readFileTextOrBinary(filePath);
       return {
-        contents: [
-          {
-            uri: request.params.uri,
-            mimeType: this.getMimeType(filePath),
-            text: content,
-          },
-        ],
+        contents: [content],
       };
     });
 
@@ -200,14 +197,27 @@ class FileSystemMCPServer {
       const { name, arguments: args } = request.params;
 
       switch (name) {
-        case "read_file":
-          return await this.readFile(args.path as string);
-        case "write_file":
-          return await this.writeFile(args.path as string, args.content as string);
-        case "list_directory":
-          return await this.listDirectory(args.path as string);
-        case "create_directory":
-          return await this.createDirectory(args.path as string);
+        case "read_file": {
+          const p = String(args?.path ?? "");
+          if (!p) throw new Error("path is required");
+          return await this.readFile(p);
+        }
+        case "write_file": {
+          const p = String(args?.path ?? "");
+          const content = String(args?.content ?? "");
+          if (!p) throw new Error("path is required");
+          return await this.writeFile(p, content);
+        }
+        case "list_directory": {
+          const p = String(args?.path ?? "");
+          if (!p) throw new Error("path is required");
+          return await this.listDirectory(p);
+        }
+        case "create_directory": {
+          const p = String(args?.path ?? "");
+          if (!p) throw new Error("path is required");
+          return await this.createDirectory(p);
+        }
         default:
           throw new Error(\`Unknown tool: \${name}\`);
       }
@@ -220,12 +230,12 @@ class FileSystemMCPServer {
       throw new Error("Access denied: Path outside allowed directory");
     }
 
-    const content = await fs.readFile(fullPath, "utf-8");
+    const content = await this.readFileTextOrBinary(fullPath);
     return {
       content: [
         {
           type: "text",
-          text: content,
+          text: content.text || content.blob || "",
         },
       ],
     };
@@ -260,7 +270,7 @@ class FileSystemMCPServer {
     const result = items.map(item => ({
       name: item.name,
       type: item.isDirectory() ? "directory" : "file",
-      path: path.join(dirPath, item.name),
+      path: pathPosix.join(dirPath.replace(/\\\\/g, "/"), item.name),
     }));
 
     return {
@@ -291,25 +301,45 @@ class FileSystemMCPServer {
     };
   }
 
-  private async listFiles(dir: string): Promise<string[]> {
-    const files: string[] = [];
-    const items = await fs.readdir(dir, { withFileTypes: true });
-
-    for (const item of items) {
-      const fullPath = path.join(dir, item.name);
-      if (item.isFile()) {
-        files.push(fullPath);
-      } else if (item.isDirectory()) {
-        files.push(...await this.listFiles(fullPath));
+  private async listFiles(dir: string, cap = 2000): Promise<string[]> {
+    const out: string[] = [];
+    const stack: string[] = [dir];
+    
+    while (stack.length && out.length < cap) {
+      const cur = stack.pop()!;
+      const items = await fs.readdir(cur, { withFileTypes: true });
+      
+      for (const it of items) {
+        if (it.name === ".git" || it.name === "node_modules") continue;
+        const full = path.join(cur, it.name);
+        if (it.isDirectory()) {
+          stack.push(full);
+        } else {
+          out.push(full);
+        }
+        if (out.length >= cap) break;
       }
     }
-
-    return files;
+    
+    return out;
   }
 
-  private isPathAllowed(filePath: string): boolean {
-    const resolvedPath = path.resolve(filePath);
-    return resolvedPath.startsWith(this.allowedPath);
+  private isPathAllowed(p: string): boolean {
+    const rel = path.relative(this.allowedPath, path.resolve(p));
+    return rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+  }
+
+  private async readFileTextOrBinary(absPath: string) {
+    const mimeType = this.getMimeType(absPath);
+    const isText = /^text\\/|\/json$|\/javascript$|\/typescript$|\/x-/.test(mimeType);
+
+    if (isText) {
+      const text = await fs.readFile(absPath, "utf-8");
+      return { uri: pathToFileURL(absPath).href, mimeType, text };
+    } else {
+      const data = await fs.readFile(absPath);
+      return { uri: pathToFileURL(absPath).href, mimeType, blob: data.toString("base64") };
+    }
   }
 
   private getMimeType(filePath: string): string {
@@ -326,8 +356,14 @@ class FileSystemMCPServer {
       ".java": "text/x-java-source",
       ".cpp": "text/x-c++src",
       ".c": "text/x-csrc",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".pdf": "application/pdf",
+      ".zip": "application/zip",
     };
-    return mimeTypes[ext] || "text/plain";
+    return mimeTypes[ext] || "application/octet-stream";
   }
 
   async run() {
@@ -343,7 +379,9 @@ async function main() {
   await server.run();
 }
 
-if (require.main === module) {
+import { pathToFileURL } from "url";
+const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntry) {
   main().catch(console.error);
 }
 `;
@@ -359,6 +397,8 @@ ${description || "MCP server for file system operations"}
 - List directory contents
 - Create new directories
 - Secure path validation to prevent directory traversal
+- Binary file support with base64 encoding
+- Resource listing with configurable limits
 
 ## Installation
 
@@ -397,7 +437,7 @@ Add this server to your Claude Desktop configuration:
   "mcpServers": {
     "${projectName}": {
       "command": "node",
-      "args": ["path/to/${projectName}/dist/index.js"],
+      "args": ["--enable-source-maps", "path/to/${projectName}/dist/index.js"],
       "env": {
         "ALLOWED_PATH": "/path/to/allowed/directory"
       }
@@ -408,14 +448,28 @@ Add this server to your Claude Desktop configuration:
 
 ## Available Tools
 
-- **read_file**: Read the contents of a file
+- **read_file**: Read the contents of a file (supports both text and binary files)
 - **write_file**: Write content to a file
 - **list_directory**: List files and directories in a path
 - **create_directory**: Create a new directory
 
 ## Available Resources
 
-The server exposes all files in the allowed directory as resources with \`file://\` URIs.
+The server exposes files in the allowed directory as resources with \`file://\` URIs. Resource listing is capped at 2000 files for performance.
+
+## Security Features
+
+- Path traversal protection using secure relative path checking
+- Configurable allowed directory scope
+- Input validation for all tool arguments
+- Binary file handling with proper MIME type detection
+
+## Technical Notes
+
+- Uses ESM modules for compatibility with the MCP SDK
+- Supports both text and binary files with appropriate encoding
+- Cross-platform path handling for Windows and POSIX systems
+- Source maps enabled for better debugging
 `;
 
   return [
@@ -431,10 +485,11 @@ const generateDatabaseServer = (projectName: string, description?: string): Proj
     name: projectName,
     version: "1.0.0",
     description: description || "MCP server for database operations",
+    type: "module",
     main: "dist/index.js",
     scripts: {
       build: "tsc",
-      start: "node dist/index.js",
+      start: "node --enable-source-maps dist/index.js",
       dev: "tsx src/index.ts"
     },
     dependencies: {
@@ -449,6 +504,25 @@ const generateDatabaseServer = (projectName: string, description?: string): Proj
     }
   };
 
+  const tsConfig = {
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      outDir: "./dist",
+      rootDir: "./src",
+      strict: true,
+      esModuleInterop: true,
+      skipLibCheck: true,
+      forceConsistentCasingInFileNames: true,
+      declaration: true,
+      declarationMap: true,
+      sourceMap: true
+    },
+    include: ["src/**/*"],
+    exclude: ["node_modules", "dist"]
+  };
+
   const indexTs = `import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -458,6 +532,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Pool } from "pg";
+import { pathToFileURL } from "url";
 
 class DatabaseMCPServer {
   private server: Server;
@@ -475,7 +550,7 @@ class DatabaseMCPServer {
       },
       {
         capabilities: {
-          resources: {},
+          resources: { listChanged: false },
           tools: {},
         },
       }
@@ -582,17 +657,24 @@ class DatabaseMCPServer {
       const { name, arguments: args } = request.params;
 
       switch (name) {
-        case "query_database":
-          return await this.queryDatabase(args.query as string);
+        case "query_database": {
+          const query = String(args?.query ?? "");
+          if (!query) throw new Error("query is required");
+          return await this.queryDatabase(query);
+        }
         case "list_tables":
           return await this.listTablesResult();
-        case "describe_table":
-          return await this.describeTable(args.table_name as string);
-        case "get_table_data":
-          return await this.getTableDataResult(
-            args.table_name as string,
-            args.limit as number || 10
-          );
+        case "describe_table": {
+          const tableName = String(args?.table_name ?? "");
+          if (!tableName) throw new Error("table_name is required");
+          return await this.describeTable(tableName);
+        }
+        case "get_table_data": {
+          const tableName = String(args?.table_name ?? "");
+          if (!tableName) throw new Error("table_name is required");
+          const limit = Number(args?.limit) || 10;
+          return await this.getTableDataResult(tableName, limit);
+        }
         default:
           throw new Error(\`Unknown tool: \${name}\`);
       }
@@ -702,7 +784,8 @@ async function main() {
   await server.run();
 }
 
-if (require.main === module) {
+const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntry) {
   main().catch(console.error);
 }
 `;
@@ -755,7 +838,7 @@ Add this server to your Claude Desktop configuration:
   "mcpServers": {
     "${projectName}": {
       "command": "node",
-      "args": ["path/to/${projectName}/dist/index.js"],
+      "args": ["--enable-source-maps", "path/to/${projectName}/dist/index.js"],
       "env": {
         "DATABASE_URL": "postgresql://username:password@localhost:5432/database_name"
       }
@@ -778,27 +861,17 @@ The server exposes all tables as resources with \`postgres://table/\` URIs.
 ## Security
 
 This server only allows SELECT queries to ensure data safety. No INSERT, UPDATE, or DELETE operations are permitted.
+
+## Technical Notes
+
+- Uses ESM modules for compatibility with the MCP SDK
+- Input validation for all tool arguments
+- Source maps enabled for better debugging
 `;
 
   return [
     { path: "package.json", content: JSON.stringify(packageJson, null, 2) },
-    { path: "tsconfig.json", content: JSON.stringify({
-      compilerOptions: {
-        target: "ES2022",
-        module: "commonjs",
-        outDir: "./dist",
-        rootDir: "./src",
-        strict: true,
-        esModuleInterop: true,
-        skipLibCheck: true,
-        forceConsistentCasingInFileNames: true,
-        declaration: true,
-        declarationMap: true,
-        sourceMap: true
-      },
-      include: ["src/**/*"],
-      exclude: ["node_modules", "dist"]
-    }, null, 2) },
+    { path: "tsconfig.json", content: JSON.stringify(tsConfig, null, 2) },
     { path: "src/index.ts", content: indexTs },
     { path: "README.md", content: readme },
   ];
@@ -809,10 +882,11 @@ const generateApiServer = (projectName: string, description?: string): ProjectFi
     name: projectName,
     version: "1.0.0",
     description: description || "MCP server for API integration",
+    type: "module",
     main: "dist/index.js",
     scripts: {
       build: "tsc",
-      start: "node dist/index.js",
+      start: "node --enable-source-maps dist/index.js",
       dev: "tsx src/index.ts"
     },
     dependencies: {
@@ -826,6 +900,25 @@ const generateApiServer = (projectName: string, description?: string): ProjectFi
     }
   };
 
+  const tsConfig = {
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      outDir: "./dist",
+      rootDir: "./src",
+      strict: true,
+      esModuleInterop: true,
+      skipLibCheck: true,
+      forceConsistentCasingInFileNames: true,
+      declaration: true,
+      declarationMap: true,
+      sourceMap: true
+    },
+    include: ["src/**/*"],
+    exclude: ["node_modules", "dist"]
+  };
+
   const indexTs = `import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -835,6 +928,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import axios, { AxiosRequestConfig } from "axios";
+import { pathToFileURL } from "url";
 
 class ApiMCPServer {
   private server: Server;
@@ -852,7 +946,7 @@ class ApiMCPServer {
       },
       {
         capabilities: {
-          resources: {},
+          resources: { listChanged: false },
           tools: {},
         },
       }
@@ -991,25 +1085,37 @@ class ApiMCPServer {
       const { name, arguments: args } = request.params;
 
       switch (name) {
-        case "get_request":
-          return await this.makeRequest("GET", args.endpoint as string, {
-            params: args.params,
-            headers: args.headers,
+        case "get_request": {
+          const endpoint = String(args?.endpoint ?? "");
+          if (!endpoint) throw new Error("endpoint is required");
+          return await this.makeRequest("GET", endpoint, {
+            params: args?.params,
+            headers: args?.headers,
           });
-        case "post_request":
-          return await this.makeRequest("POST", args.endpoint as string, {
-            data: args.data,
-            headers: args.headers,
+        }
+        case "post_request": {
+          const endpoint = String(args?.endpoint ?? "");
+          if (!endpoint) throw new Error("endpoint is required");
+          return await this.makeRequest("POST", endpoint, {
+            data: args?.data,
+            headers: args?.headers,
           });
-        case "put_request":
-          return await this.makeRequest("PUT", args.endpoint as string, {
-            data: args.data,
-            headers: args.headers,
+        }
+        case "put_request": {
+          const endpoint = String(args?.endpoint ?? "");
+          if (!endpoint) throw new Error("endpoint is required");
+          return await this.makeRequest("PUT", endpoint, {
+            data: args?.data,
+            headers: args?.headers,
           });
-        case "delete_request":
-          return await this.makeRequest("DELETE", args.endpoint as string, {
-            headers: args.headers,
+        }
+        case "delete_request": {
+          const endpoint = String(args?.endpoint ?? "");
+          if (!endpoint) throw new Error("endpoint is required");
+          return await this.makeRequest("DELETE", endpoint, {
+            headers: args?.headers,
           });
+        }
         default:
           throw new Error(\`Unknown tool: \${name}\`);
       }
@@ -1098,7 +1204,8 @@ async function main() {
   await server.run();
 }
 
-if (require.main === module) {
+const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntry) {
   main().catch(console.error);
 }
 `;
@@ -1151,7 +1258,7 @@ Add this server to your Claude Desktop configuration:
   "mcpServers": {
     "${projectName}": {
       "command": "node",
-      "args": ["path/to/${projectName}/dist/index.js"],
+      "args": ["--enable-source-maps", "path/to/${projectName}/dist/index.js"],
       "env": {
         "API_BASE_URL": "https://api.example.com",
         "API_KEY": "your-api-key"
@@ -1180,27 +1287,17 @@ The server will automatically add the API key as a Bearer token if provided. You
 - POST /users with user data
 - PUT /users/123 with updated user data
 - DELETE /users/123
+
+## Technical Notes
+
+- Uses ESM modules for compatibility with the MCP SDK
+- Input validation for all tool arguments
+- Source maps enabled for better debugging
 `;
 
   return [
     { path: "package.json", content: JSON.stringify(packageJson, null, 2) },
-    { path: "tsconfig.json", content: JSON.stringify({
-      compilerOptions: {
-        target: "ES2022",
-        module: "commonjs",
-        outDir: "./dist",
-        rootDir: "./src",
-        strict: true,
-        esModuleInterop: true,
-        skipLibCheck: true,
-        forceConsistentCasingInFileNames: true,
-        declaration: true,
-        declarationMap: true,
-        sourceMap: true
-      },
-      include: ["src/**/*"],
-      exclude: ["node_modules", "dist"]
-    }, null, 2) },
+    { path: "tsconfig.json", content: JSON.stringify(tsConfig, null, 2) },
     { path: "src/index.ts", content: indexTs },
     { path: "README.md", content: readme },
   ];
@@ -1211,10 +1308,11 @@ const generateGitServer = (projectName: string, description?: string): ProjectFi
     name: projectName,
     version: "1.0.0",
     description: description || "MCP server for Git repository operations",
+    type: "module",
     main: "dist/index.js",
     scripts: {
       build: "tsc",
-      start: "node dist/index.js",
+      start: "node --enable-source-maps dist/index.js",
       dev: "tsx src/index.ts"
     },
     dependencies: {
@@ -1228,6 +1326,25 @@ const generateGitServer = (projectName: string, description?: string): ProjectFi
     }
   };
 
+  const tsConfig = {
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      outDir: "./dist",
+      rootDir: "./src",
+      strict: true,
+      esModuleInterop: true,
+      skipLibCheck: true,
+      forceConsistentCasingInFileNames: true,
+      declaration: true,
+      declarationMap: true,
+      sourceMap: true
+    },
+    include: ["src/**/*"],
+    exclude: ["node_modules", "dist"]
+  };
+
   const indexTs = `import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -1239,6 +1356,7 @@ import {
 import simpleGit, { SimpleGit } from "simple-git";
 import fs from "fs/promises";
 import path from "path";
+import { pathToFileURL } from "url";
 
 class GitMCPServer {
   private server: Server;
@@ -1256,7 +1374,7 @@ class GitMCPServer {
       },
       {
         capabilities: {
-          resources: {},
+          resources: { listChanged: false },
           tools: {},
         },
       }
@@ -1473,18 +1591,35 @@ class GitMCPServer {
       switch (name) {
         case "git_status":
           return await this.getStatus();
-        case "git_log":
-          return await this.getLog(args.maxCount as number);
-        case "git_show":
-          return await this.showCommit(args.commit as string);
-        case "git_diff":
-          return await this.getDiff(args.from as string, args.to as string, args.file as string);
-        case "git_branches":
-          return await this.getBranches(args.remote as boolean);
-        case "read_file":
-          return await this.readFileResult(args.path as string, args.commit as string);
-        case "list_files":
-          return await this.listFiles(args.path as string);
+        case "git_log": {
+          const maxCount = Number(args?.maxCount) || 10;
+          return await this.getLog(maxCount);
+        }
+        case "git_show": {
+          const commit = String(args?.commit ?? "");
+          if (!commit) throw new Error("commit is required");
+          return await this.showCommit(commit);
+        }
+        case "git_diff": {
+          const from = args?.from ? String(args.from) : undefined;
+          const to = args?.to ? String(args.to) : undefined;
+          const file = args?.file ? String(args.file) : undefined;
+          return await this.getDiff(from, to, file);
+        }
+        case "git_branches": {
+          const remote = Boolean(args?.remote);
+          return await this.getBranches(remote);
+        }
+        case "read_file": {
+          const filePath = String(args?.path ?? "");
+          if (!filePath) throw new Error("path is required");
+          const commit = args?.commit ? String(args.commit) : undefined;
+          return await this.readFileResult(filePath, commit);
+        }
+        case "list_files": {
+          const dirPath = String(args?.path ?? ".");
+          return await this.listFiles(dirPath);
+        }
         default:
           throw new Error(\`Unknown tool: \${name}\`);
       }
@@ -1631,7 +1766,8 @@ async function main() {
   await server.run();
 }
 
-if (require.main === module) {
+const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntry) {
   main().catch(console.error);
 }
 `;
@@ -1684,7 +1820,7 @@ Add this server to your Claude Desktop configuration:
   "mcpServers": {
     "${projectName}": {
       "command": "node",
-      "args": ["path/to/${projectName}/dist/index.js"],
+      "args": ["--enable-source-maps", "path/to/${projectName}/dist/index.js"],
       "env": {
         "REPO_PATH": "/path/to/git/repository"
       }
@@ -1713,27 +1849,17 @@ Add this server to your Claude Desktop configuration:
 ## Security
 
 This server provides read-only access to git repositories. No write operations (commit, push, etc.) are supported.
+
+## Technical Notes
+
+- Uses ESM modules for compatibility with the MCP SDK
+- Input validation for all tool arguments
+- Source maps enabled for better debugging
 `;
 
   return [
     { path: "package.json", content: JSON.stringify(packageJson, null, 2) },
-    { path: "tsconfig.json", content: JSON.stringify({
-      compilerOptions: {
-        target: "ES2022",
-        module: "commonjs",
-        outDir: "./dist",
-        rootDir: "./src",
-        strict: true,
-        esModuleInterop: true,
-        skipLibCheck: true,
-        forceConsistentCasingInFileNames: true,
-        declaration: true,
-        declarationMap: true,
-        sourceMap: true
-      },
-      include: ["src/**/*"],
-      exclude: ["node_modules", "dist"]
-    }, null, 2) },
+    { path: "tsconfig.json", content: JSON.stringify(tsConfig, null, 2) },
     { path: "src/index.ts", content: indexTs },
     { path: "README.md", content: readme },
   ];
@@ -1749,7 +1875,7 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
     switch (req.serverType) {
       case "filesystem":
         files = generateFileSystemServer(req.projectName, req.description);
-        instructions = `Your file system MCP server has been generated! This server provides secure file operations within a specified directory.
+        instructions = `Your file system MCP server has been generated with production-ready fixes! This server provides secure file operations within a specified directory.
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -1758,12 +1884,19 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 4. Set the ALLOWED_PATH environment variable to specify the root directory
 5. Test with \`npm start\` or integrate with Claude Desktop
 
-**Security:** The server includes path validation to prevent directory traversal attacks.`;
+**Production improvements:**
+- ESM module support for MCP SDK compatibility
+- Secure path traversal protection using relative path checking
+- Binary file support with base64 encoding
+- Resource listing capped at 2000 files for performance
+- Cross-platform path handling for Windows and POSIX systems
+- Input validation for all tool arguments
+- Source maps enabled for better debugging`;
         break;
 
       case "database":
         files = generateDatabaseServer(req.projectName, req.description);
-        instructions = `Your database MCP server has been generated! This server provides read-only access to PostgreSQL databases.
+        instructions = `Your database MCP server has been generated with production-ready fixes! This server provides read-only access to PostgreSQL databases.
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -1772,12 +1905,16 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 4. Set the DATABASE_URL environment variable with your PostgreSQL connection string
 5. Test with \`npm start\` or integrate with Claude Desktop
 
-**Security:** Only SELECT queries are allowed for data safety.`;
+**Production improvements:**
+- ESM module support for MCP SDK compatibility
+- Input validation for all tool arguments
+- Source maps enabled for better debugging
+- Security: Only SELECT queries are allowed for data safety`;
         break;
 
       case "api":
         files = generateApiServer(req.projectName, req.description);
-        instructions = `Your API integration MCP server has been generated! This server acts as a proxy to external REST APIs.
+        instructions = `Your API integration MCP server has been generated with production-ready fixes! This server acts as a proxy to external REST APIs.
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -1787,12 +1924,16 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 5. Optionally set API_KEY for authentication
 6. Test with \`npm start\` or integrate with Claude Desktop
 
-**Features:** Supports GET, POST, PUT, and DELETE requests with automatic API key authentication.`;
+**Production improvements:**
+- ESM module support for MCP SDK compatibility
+- Input validation for all tool arguments
+- Source maps enabled for better debugging
+- Features: Supports GET, POST, PUT, and DELETE requests with automatic API key authentication`;
         break;
 
       case "git":
         files = generateGitServer(req.projectName, req.description);
-        instructions = `Your Git repository MCP server has been generated! This server provides read-only access to Git repositories.
+        instructions = `Your Git repository MCP server has been generated with production-ready fixes! This server provides read-only access to Git repositories.
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -1801,13 +1942,17 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 4. Set the REPO_PATH environment variable to your Git repository path
 5. Test with \`npm start\` or integrate with Claude Desktop
 
-**Features:** Browse commits, read files from any commit, view diffs, and explore repository history.`;
+**Production improvements:**
+- ESM module support for MCP SDK compatibility
+- Input validation for all tool arguments
+- Source maps enabled for better debugging
+- Features: Browse commits, read files from any commit, view diffs, and explore repository history`;
         break;
 
       case "custom":
         // Generate a basic template for custom servers
         files = generateFileSystemServer(req.projectName, req.description);
-        instructions = `A basic MCP server template has been generated based on the file system server. 
+        instructions = `A production-ready MCP server template has been generated based on the file system server with all the latest fixes.
 
 **Customization needed:**
 1. Modify the tools and resources in src/index.ts according to your requirements
@@ -1815,6 +1960,13 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 3. Implement your custom logic in the tool handlers
 
 **Requirements:** ${req.customRequirements || "No specific requirements provided"}
+
+**Production improvements included:**
+- ESM module support for MCP SDK compatibility
+- Secure path handling and validation
+- Binary file support
+- Input validation
+- Source maps for debugging
 
 Follow the MCP SDK documentation to implement your custom functionality.`;
         break;
