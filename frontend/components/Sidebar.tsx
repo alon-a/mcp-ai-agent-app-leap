@@ -1,13 +1,16 @@
-import { X, FileCode, Server, Zap, Book, Github } from "lucide-react";
+import { X, FileCode, Server, Zap, Book, Github, MessageSquare, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
+  onNavigateToTestimonials: () => void;
+  onNavigateToChat: () => void;
+  currentPage: "chat" | "testimonials";
 }
 
-export function Sidebar({ isOpen, onClose }: SidebarProps) {
+export function Sidebar({ isOpen, onClose, onNavigateToTestimonials, onNavigateToChat, currentPage }: SidebarProps) {
   const resources = [
     {
       title: "MCP Documentation",
@@ -48,6 +51,27 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     }
   ];
 
+  const navigationItems = [
+    {
+      title: "Chat Assistant",
+      icon: MessageSquare,
+      onClick: () => {
+        onNavigateToChat();
+        onClose();
+      },
+      isActive: currentPage === "chat"
+    },
+    {
+      title: "Testimonials",
+      icon: Star,
+      onClick: () => {
+        onNavigateToTestimonials();
+        onClose();
+      },
+      isActive: currentPage === "testimonials"
+    }
+  ];
+
   return (
     <>
       {/* Overlay */}
@@ -66,7 +90,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         <div className="flex flex-col h-full">
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-gray-200">
-            <h2 className="text-lg font-semibold text-gray-900">Resources</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Navigation</h2>
             <Button
               variant="ghost"
               size="sm"
@@ -79,6 +103,35 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           
           {/* Content */}
           <div className="flex-1 overflow-y-auto p-4 space-y-6">
+            {/* Navigation */}
+            <div>
+              <h3 className="text-sm font-medium text-gray-900 mb-3">Pages</h3>
+              <div className="space-y-2">
+                {navigationItems.map((item, index) => (
+                  <button
+                    key={index}
+                    onClick={item.onClick}
+                    className={cn(
+                      "flex items-start space-x-3 p-3 rounded-lg transition-colors w-full text-left",
+                      item.isActive 
+                        ? "bg-blue-50 text-blue-700" 
+                        : "hover:bg-gray-50 text-gray-700"
+                    )}
+                  >
+                    <item.icon className={cn(
+                      "h-5 w-5 mt-0.5",
+                      item.isActive ? "text-blue-600" : "text-gray-400"
+                    )} />
+                    <div>
+                      <div className="text-sm font-medium">
+                        {item.title}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Documentation Links */}
             <div>
               <h3 className="text-sm font-medium text-gray-900 mb-3">Documentation</h3>
