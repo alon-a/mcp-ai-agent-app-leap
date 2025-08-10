@@ -424,7 +424,7 @@ class FileSystemMCPServer {
 
   async run() {
     const transport = new StdioServerTransport();
-    await server.connect(transport);
+    await this.server.connect(transport);
     console.error(\`File System MCP server running on stdio (root: \${this.allowedPath})\`);
   }
 }

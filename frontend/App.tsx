@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChatInterface } from "./components/ChatInterface";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
+import { Toaster } from "@/components/ui/toaster";
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -25,6 +26,8 @@ export default function App() {
           <ChatInterface />
         </main>
       </div>
+      
+      <Toaster />
     </div>
   );
 }

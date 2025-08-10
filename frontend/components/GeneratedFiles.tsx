@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Download, Copy, Check, FileText, Package, Settings, BookOpen } from "lucide-react";
+import { Download, Copy, Check, FileText, Package, Settings, BookOpen, ArrowLeft } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 
 interface ProjectFile {
@@ -121,6 +121,7 @@ export function GeneratedFiles({ files, instructions, onBack, projectType = "ser
     if (path === "package.json") return Package;
     if (path === "tsconfig.json") return Settings;
     if (path === "README.md") return BookOpen;
+    if (path === "config.json") return Settings;
     return FileText;
   };
 
@@ -154,6 +155,7 @@ export function GeneratedFiles({ files, instructions, onBack, projectType = "ser
             
             <div className="flex space-x-2">
               <Button variant="outline" onClick={onBack}>
+                <ArrowLeft className="h-4 w-4 mr-2" />
                 Generate Another
               </Button>
               <Button onClick={handleDownloadAll}>

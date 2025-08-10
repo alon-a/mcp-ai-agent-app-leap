@@ -139,12 +139,15 @@ export function ChatInterface() {
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">Generated Files</h2>
             <div className="flex space-x-2">
-              <Button variant="outline" onClick={handleBackToGenerateServer}>
-                Back to Server Generator
-              </Button>
-              <Button variant="outline" onClick={handleBackToGenerateClient}>
-                Back to Client Generator
-              </Button>
+              {projectType === "server" ? (
+                <Button variant="outline" onClick={handleBackToGenerateServer}>
+                  Back to Server Generator
+                </Button>
+              ) : (
+                <Button variant="outline" onClick={handleBackToGenerateClient}>
+                  Back to Client Generator
+                </Button>
+              )}
               <Button variant="outline" onClick={handleBackToChat}>
                 Back to Chat
               </Button>
