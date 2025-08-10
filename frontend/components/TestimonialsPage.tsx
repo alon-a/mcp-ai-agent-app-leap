@@ -14,7 +14,10 @@ export function TestimonialsPage() {
       company: "OpenAI",
       rating: 5,
       quote: "Click to read the full testimonial about MCP Assistant's code generation quality",
-      fullTestimonial: `After extensive analysis of the MCP Assistant's generated code, I'm impressed by the exceptional quality and attention to detail. The code demonstrates:
+      // 👇 UPDATE THIS CONTENT - Replace with your actual ChatGPT-5 testimonial
+      fullTestimonial: `[REPLACE THIS WITH YOUR ACTUAL CHATGPT-5 TESTIMONIAL]
+
+After extensive analysis of the MCP Assistant's generated code, I'm impressed by the exceptional quality and attention to detail. The code demonstrates:
 
 • **Enterprise-grade security**: Comprehensive path traversal protection, input validation, and secure-by-default configurations
 • **Production readiness**: Proper error handling, resource limits, and cross-platform compatibility
@@ -32,7 +35,10 @@ What particularly stands out is the balance between functionality and security -
       company: "xAI",
       rating: 5,
       quote: "Click to read the full testimonial about MCP Assistant's innovative approach",
-      fullTestimonial: `The MCP Assistant represents a breakthrough in automated code generation. What sets it apart is not just the quality of output, but the innovative approach to solving real-world development challenges:
+      // 👇 UPDATE THIS CONTENT - Replace with your actual Grok-Expert testimonial
+      fullTestimonial: `[REPLACE THIS WITH YOUR ACTUAL GROK-EXPERT TESTIMONIAL]
+
+The MCP Assistant represents a breakthrough in automated code generation. What sets it apart is not just the quality of output, but the innovative approach to solving real-world development challenges:
 
 • **Intelligent architecture decisions**: The assistant makes smart choices about project structure, dependency management, and configuration
 • **Security-first mindset**: Every generated component includes comprehensive security measures from day one
@@ -52,7 +58,10 @@ This tool doesn't just generate code; it generates *good* code that follows indu
       company: "Anthropic",
       rating: 5,
       quote: "Click to read the full testimonial about MCP Assistant's reliability",
-      fullTestimonial: `As an AI system that values reliability and correctness, I've thoroughly evaluated the MCP Assistant's output quality. The results are consistently excellent across multiple dimensions:
+      // 👇 UPDATE THIS CONTENT - Replace with your actual Claude Sonnet 4 testimonial
+      fullTestimonial: `[REPLACE THIS WITH YOUR ACTUAL CLAUDE SONNET 4 TESTIMONIAL]
+
+As an AI system that values reliability and correctness, I've thoroughly evaluated the MCP Assistant's output quality. The results are consistently excellent across multiple dimensions:
 
 • **Correctness**: The generated code compiles cleanly and runs without errors
 • **Reliability**: Proper error handling, graceful degradation, and robust resource management
@@ -74,7 +83,10 @@ This is the kind of code generation tool that actually saves development time wh
       company: "Google",
       rating: 5,
       quote: "Click to read the full testimonial about MCP Assistant's performance excellence",
-      fullTestimonial: `From a performance and efficiency perspective, the MCP Assistant delivers outstanding results. The generated code demonstrates sophisticated understanding of performance optimization:
+      // 👇 UPDATE THIS CONTENT - Replace with your actual Google Gemini Flash 2.5 testimonial
+      fullTestimonial: `[REPLACE THIS WITH YOUR ACTUAL GOOGLE GEMINI FLASH 2.5 TESTIMONIAL]
+
+From a performance and efficiency perspective, the MCP Assistant delivers outstanding results. The generated code demonstrates sophisticated understanding of performance optimization:
 
 • **Efficient algorithms**: Smart choices for data structures and processing patterns
 • **Resource management**: Proper connection pooling, memory management, and cleanup
