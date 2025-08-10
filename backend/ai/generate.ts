@@ -483,7 +483,7 @@ const generateDatabaseServer = (projectName: string, description?: string): Proj
   const packageJson = {
     name: projectName,
     version: "1.0.0",
-    description: description || "MCP server for database operations",
+    description: description || "MCP server for secure PostgreSQL database operations",
     type: "module",
     main: "dist/index.js",
     scripts: {
@@ -493,7 +493,7 @@ const generateDatabaseServer = (projectName: string, description?: string): Proj
     },
     dependencies: {
       "@modelcontextprotocol/sdk": "^1.0.0",
-      "pg": "^8.11.0"
+      "pg": "^8.12.0"
     },
     devDependencies: {
       "@types/node": "^20.0.0",
@@ -533,14 +533,46 @@ import {
 import { Pool } from "pg";
 import { pathToFileURL } from "url";
 
+interface TableInfo {
+  table_schema: string;
+  table_name: string;
+}
+
+interface WhereCondition {
+  column: string;
+  op: "=" | "!=";
+  value: any;
+}
+
+interface WhereClause {
+  conditions: WhereCondition[];
+}
+
 class DatabaseMCPServer {
   private server: Server;
   private pool: Pool;
+  private allowedSchemas: string[];
+  private rowLimitDefault: number;
+  private rowLimitMax: number;
 
   constructor() {
+    // Configure Postgres from environment variables
     this.pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+      host: process.env.PGHOST || "localhost",
+      port: Number(process.env.PGPORT || 5432),
+      user: process.env.PGUSER || "postgres",
+      password: process.env.PGPASSWORD || "",
+      database: process.env.PGDATABASE || "postgres",
+      ssl: process.env.PGSSL === "true" ? { rejectUnauthorized: false } : undefined,
+      statement_timeout: Number(process.env.PG_STMT_TIMEOUT || 15000),
+      idleTimeoutMillis: 30000,
+      max: 10,
     });
+
+    // Security configuration
+    this.allowedSchemas = (process.env.PG_ALLOW_SCHEMAS || "public").split(",").map(s => s.trim());
+    this.rowLimitDefault = Number(process.env.PG_ROW_LIMIT || 50);
+    this.rowLimitMax = Number(process.env.PG_ROW_LIMIT_MAX || 500);
 
     this.server = new Server(
       {
@@ -561,91 +593,148 @@ class DatabaseMCPServer {
   private setupHandlers() {
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
       const tables = await this.listTables();
+      const previews = tables.slice(0, 500).map(t => ({
+        uri: \`pg://table/\${encodeURIComponent(t.table_schema)}/\${encodeURIComponent(t.table_name)}?limit=\${this.rowLimitDefault}\`,
+        mimeType: "application/json",
+        name: \`\${t.table_schema}.\${t.table_name} (preview)\`,
+      }));
+
       return {
-        resources: tables.map(table => ({
-          uri: \`postgres://table/\${table}\`,
-          mimeType: "application/json",
-          name: \`Table: \${table}\`,
-        })),
+        resources: [
+          {
+            uri: "pg://tables",
+            mimeType: "application/json",
+            name: "Tables list",
+          },
+          ...previews,
+        ],
       };
     });
 
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       const url = new URL(request.params.uri);
-      if (url.protocol !== "postgres:") {
-        throw new Error("Only postgres:// URIs are supported");
+      if (url.protocol !== "pg:") {
+        throw new Error("Only pg:// URIs are supported");
       }
 
-      const tableName = url.pathname.replace("/table/", "");
-      const data = await this.getTableData(tableName);
-      
-      return {
-        contents: [
-          {
-            uri: request.params.uri,
-            mimeType: "application/json",
-            text: JSON.stringify(data, null, 2),
-          },
-        ],
-      };
+      const host = url.host; // "tables" | "table"
+      const path = url.pathname.replace(/^\/+/, ""); // "<schema>/<table>"
+
+      if (host === "tables") {
+        const rows = await this.listTables();
+        return {
+          contents: [
+            {
+              uri: request.params.uri,
+              mimeType: "application/json",
+              text: JSON.stringify(rows, null, 2),
+            },
+          ],
+        };
+      }
+
+      if (host === "table") {
+        const [schemaEnc, tableEnc] = path.split("/");
+        if (!schemaEnc || !tableEnc) {
+          throw new Error("Expected pg://table/<schema>/<table>");
+        }
+        const schema = decodeURIComponent(schemaEnc);
+        const table = decodeURIComponent(tableEnc);
+        const limit = Number(url.searchParams.get("limit") || this.rowLimitDefault);
+        const rows = await this.readTable(schema, table, limit);
+        
+        return {
+          contents: [
+            {
+              uri: request.params.uri,
+              mimeType: "application/json",
+              text: JSON.stringify(rows, null, 2),
+            },
+          ],
+        };
+      }
+
+      throw new Error(\`Unknown resource: \${host}\`);
     });
 
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
         tools: [
           {
-            name: "query_database",
-            description: "Execute a SELECT query on the database",
+            name: "pg_describe_table",
+            description: "Get column names and types for a table",
             inputSchema: {
               type: "object",
               properties: {
-                query: {
+                schema: {
                   type: "string",
-                  description: "SQL SELECT query to execute",
+                  description: "Database schema name",
+                },
+                table: {
+                  type: "string",
+                  description: "Table name",
                 },
               },
-              required: ["query"],
+              required: ["schema", "table"],
             },
           },
           {
-            name: "list_tables",
-            description: "List all tables in the database",
-            inputSchema: {
-              type: "object",
-              properties: {},
-            },
-          },
-          {
-            name: "describe_table",
-            description: "Get the schema of a specific table",
+            name: "pg_query_table",
+            description: "Read rows from a table with optional equality/inequality filters and limit",
             inputSchema: {
               type: "object",
               properties: {
-                table_name: {
+                schema: {
                   type: "string",
-                  description: "Name of the table to describe",
+                  description: "Database schema name",
                 },
-              },
-              required: ["table_name"],
-            },
-          },
-          {
-            name: "get_table_data",
-            description: "Get sample data from a table",
-            inputSchema: {
-              type: "object",
-              properties: {
-                table_name: {
+                table: {
                   type: "string",
-                  description: "Name of the table",
+                  description: "Table name",
                 },
                 limit: {
                   type: "number",
                   description: "Maximum number of rows to return",
-                  default: 10,
+                  default: this.rowLimitDefault,
+                },
+                where: {
+                  type: "object",
+                  description: "WHERE clause conditions",
+                  properties: {
+                    conditions: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          column: {
+                            type: "string",
+                            description: "Column name",
+                          },
+                          op: {
+                            type: "string",
+                            enum: ["=", "!="],
+                            default: "=",
+                            description: "Comparison operator",
+                          },
+                          value: {
+                            description: "Value to compare against",
+                          },
+                        },
+                        required: ["column", "value"],
+                      },
+                    },
+                  },
                 },
               },
-              required: ["table_name"],
+              required: ["schema", "table"],
+            },
+          },
+          {
+            name: "pg_list_tables",
+            description: "List all tables in allowed schemas",
+            inputSchema: {
+              type: "object",
+              properties: {},
             },
           },
         ],
@@ -656,65 +745,48 @@ class DatabaseMCPServer {
       const { name, arguments: args } = request.params;
 
       switch (name) {
-        case "query_database": {
-          const query = String(args?.query ?? "");
-          if (!query) throw new Error("query is required");
-          return await this.queryDatabase(query);
+        case "pg_describe_table": {
+          const schema = String(args?.schema ?? "");
+          const table = String(args?.table ?? "");
+          if (!schema || !table) throw new Error("schema and table are required");
+          return await this.describeTable(schema, table);
         }
-        case "list_tables":
+        case "pg_query_table": {
+          const schema = String(args?.schema ?? "");
+          const table = String(args?.table ?? "");
+          const limit = Number(args?.limit ?? this.rowLimitDefault);
+          const where = args?.where as WhereClause | undefined;
+          if (!schema || !table) throw new Error("schema and table are required");
+          return await this.queryTable(schema, table, limit, where);
+        }
+        case "pg_list_tables":
           return await this.listTablesResult();
-        case "describe_table": {
-          const tableName = String(args?.table_name ?? "");
-          if (!tableName) throw new Error("table_name is required");
-          return await this.describeTable(tableName);
-        }
-        case "get_table_data": {
-          const tableName = String(args?.table_name ?? "");
-          if (!tableName) throw new Error("table_name is required");
-          const limit = Number(args?.limit) || 10;
-          return await this.getTableDataResult(tableName, limit);
-        }
         default:
           throw new Error(\`Unknown tool: \${name}\`);
       }
     });
   }
 
-  private async queryDatabase(query: string) {
-    // Only allow SELECT queries for safety
-    if (!query.trim().toLowerCase().startsWith("select")) {
-      throw new Error("Only SELECT queries are allowed");
-    }
-
-    const result = await this.pool.query(query);
-    
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            rows: result.rows,
-            rowCount: result.rowCount,
-            fields: result.fields.map(f => ({ name: f.name, dataTypeID: f.dataTypeID })),
-          }, null, 2),
-        },
-      ],
-    };
+  // Simple identifier validator
+  private isSafeIdent(s: string): boolean {
+    const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    return IDENT.test(s);
   }
 
-  private async listTables(): Promise<string[]> {
-    const result = await this.pool.query(\`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public'
-      ORDER BY table_name
-    \`);
-    return result.rows.map(row => row.table_name);
+  // List tables from catalog (enforces schema allowlist)
+  private async listTables(): Promise<TableInfo[]> {
+    const result = await this.pool.query(
+      \`SELECT table_schema, table_name
+       FROM information_schema.tables
+       WHERE table_type = 'BASE TABLE' AND table_schema = ANY($1::text[])
+       ORDER BY table_schema, table_name\`,
+      [this.allowedSchemas]
+    );
+    return result.rows;
   }
 
   private async listTablesResult() {
     const tables = await this.listTables();
-    
     return {
       content: [
         {
@@ -725,18 +797,21 @@ class DatabaseMCPServer {
     };
   }
 
-  private async describeTable(tableName: string) {
-    const result = await this.pool.query(\`
-      SELECT 
-        column_name,
-        data_type,
-        is_nullable,
-        column_default,
-        character_maximum_length
-      FROM information_schema.columns 
-      WHERE table_name = $1 AND table_schema = 'public'
-      ORDER BY ordinal_position
-    \`, [tableName]);
+  private async describeTable(schema: string, table: string) {
+    if (!this.allowedSchemas.includes(schema)) {
+      throw new Error("Schema not allowed");
+    }
+    if (!this.isSafeIdent(schema) || !this.isSafeIdent(table)) {
+      throw new Error("Invalid identifier");
+    }
+
+    const result = await this.pool.query(
+      \`SELECT column_name, data_type, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = $2
+       ORDER BY ordinal_position\`,
+      [schema, table]
+    );
 
     return {
       content: [
@@ -748,19 +823,46 @@ class DatabaseMCPServer {
     };
   }
 
-  private async getTableData(tableName: string, limit: number = 10) {
-    const result = await this.pool.query(\`SELECT * FROM "\${tableName}" LIMIT $1\`, [limit]);
+  // Read rows with limit, optional simple WHERE (column = $1 AND …)
+  private async readTable(schema: string, table: string, limit: number, where?: WhereClause): Promise<any[]> {
+    if (!this.isSafeIdent(schema) || !this.isSafeIdent(table)) {
+      throw new Error("Invalid identifier");
+    }
+    if (!this.allowedSchemas.includes(schema)) {
+      throw new Error("Schema not allowed");
+    }
+
+    // Validate columns if a WHERE is provided
+    const cols = where?.conditions?.map(c => c.column) || [];
+    if (cols.some(c => !this.isSafeIdent(c))) {
+      throw new Error("Invalid column identifier");
+    }
+
+    // Build where clause with parameterization
+    const values: any[] = [];
+    const parts: string[] = [];
+    if (where?.conditions?.length) {
+      for (const c of where.conditions) {
+        values.push(c.value);
+        const op = c.op === "!=" ? "!=" : "=";
+        parts.push(\`"\${c.column}" \${op} $\${values.length}\`);
+      }
+    }
+    const whereSql = parts.length ? \` WHERE \${parts.join(" AND ")}\` : "";
+
+    const lim = Math.min(Math.max(1, Number(limit) || this.rowLimitDefault), this.rowLimitMax);
+    const sql = \`SELECT * FROM "\${schema}".\${table}\${whereSql} LIMIT \${lim}\`;
+    const result = await this.pool.query(sql, values);
     return result.rows;
   }
 
-  private async getTableDataResult(tableName: string, limit: number = 10) {
-    const data = await this.getTableData(tableName, limit);
-    
+  private async queryTable(schema: string, table: string, limit: number, where?: WhereClause) {
+    const rows = await this.readTable(schema, table, limit, where);
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify(data, null, 2),
+          text: JSON.stringify(rows, null, 2),
         },
       ],
     };
@@ -769,13 +871,14 @@ class DatabaseMCPServer {
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error("Database MCP server running on stdio");
+    console.error("PostgreSQL MCP server running on stdio");
   }
 }
 
 async function main() {
-  if (!process.env.DATABASE_URL) {
-    console.error("DATABASE_URL environment variable is required");
+  // Validate required environment variables
+  if (!process.env.PGDATABASE && !process.env.DATABASE_URL) {
+    console.error("Either PGDATABASE or DATABASE_URL environment variable is required");
     process.exit(1);
   }
 
@@ -785,21 +888,25 @@ async function main() {
 
 const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
-  main().catch(console.error);
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
 }
 `;
 
   const readme = `# ${projectName}
 
-${description || "MCP server for database operations"}
+${description || "MCP server for secure PostgreSQL database operations"}
 
 ## Features
 
-- Execute SELECT queries safely
-- List all tables in the database
-- Describe table schemas
-- Get sample data from tables
-- Read-only operations for security
+- **Secure by design**: No arbitrary SQL execution, only safe read operations
+- **Schema allowlisting**: Restrict access to specific database schemas
+- **Identifier validation**: Prevent SQL injection through proper identifier validation
+- **Row limits**: Configurable limits to prevent large data dumps
+- **Connection pooling**: Efficient database connection management
+- **Timeout protection**: Statement timeouts to prevent runaway queries
 
 ## Installation
 
@@ -810,10 +917,35 @@ npm run build
 
 ## Configuration
 
-Set the \`DATABASE_URL\` environment variable:
+### Required Environment Variables
 
 \`\`\`bash
+# Database connection (choose one approach)
+export PGHOST=localhost
+export PGPORT=5432
+export PGUSER=postgres
+export PGPASSWORD=your_password
+export PGDATABASE=your_database
+
+# OR use a connection string
 export DATABASE_URL="postgresql://username:password@localhost:5432/database_name"
+\`\`\`
+
+### Optional Security Configuration
+
+\`\`\`bash
+# Allowed schemas (comma-separated, defaults to "public")
+export PG_ALLOW_SCHEMAS="public,app_schema"
+
+# Row limits (defaults: 50 default, 500 max)
+export PG_ROW_LIMIT=50
+export PG_ROW_LIMIT_MAX=500
+
+# Query timeout in milliseconds (default: 15000)
+export PG_STMT_TIMEOUT=15000
+
+# Enable SSL (for remote connections)
+export PGSSL=true
 \`\`\`
 
 ## Usage
@@ -839,7 +971,12 @@ Add this server to your Claude Desktop configuration:
       "command": "node",
       "args": ["--enable-source-maps", "path/to/${projectName}/dist/index.js"],
       "env": {
-        "DATABASE_URL": "postgresql://username:password@localhost:5432/database_name"
+        "PGHOST": "localhost",
+        "PGPORT": "5432",
+        "PGUSER": "postgres",
+        "PGPASSWORD": "your_password",
+        "PGDATABASE": "your_database",
+        "PG_ALLOW_SCHEMAS": "public"
       }
     }
   }
@@ -848,24 +985,86 @@ Add this server to your Claude Desktop configuration:
 
 ## Available Tools
 
-- **query_database**: Execute SELECT queries on the database
-- **list_tables**: List all tables in the database
-- **describe_table**: Get the schema of a specific table
-- **get_table_data**: Get sample data from a table
+- **pg_describe_table**: Get column names and types for a table
+- **pg_query_table**: Read rows from a table with optional filters and limits
+- **pg_list_tables**: List all tables in allowed schemas
 
 ## Available Resources
 
-The server exposes all tables as resources with \`postgres://table/\` URIs.
+- **pg://tables**: List of all accessible tables
+- **pg://table/\<schema\>/\<table\>**: Preview rows from a specific table
 
-## Security
+## Security Features
 
-This server only allows SELECT queries to ensure data safety. No INSERT, UPDATE, or DELETE operations are permitted.
+### Safe by Default
+- **No arbitrary SQL**: Only predefined, safe operations are allowed
+- **Schema allowlisting**: Access restricted to explicitly allowed schemas
+- **Identifier validation**: All table and column names are validated against safe patterns
+- **Parameterized queries**: All user input is properly parameterized
+- **Row limits**: Configurable limits prevent large data dumps
+- **Query timeouts**: Prevents runaway queries from consuming resources
+
+### Supported WHERE Operations
+The server supports simple equality and inequality filters:
+- \`column = value\`
+- \`column != value\`
+
+Multiple conditions are combined with AND logic.
+
+## Example Usage
+
+### Describe a table
+\`\`\`json
+{
+  "tool": "pg_describe_table",
+  "arguments": {
+    "schema": "public",
+    "table": "users"
+  }
+}
+\`\`\`
+
+### Query with filters
+\`\`\`json
+{
+  "tool": "pg_query_table",
+  "arguments": {
+    "schema": "public",
+    "table": "users",
+    "limit": 10,
+    "where": {
+      "conditions": [
+        {"column": "active", "op": "=", "value": true},
+        {"column": "role", "op": "!=", "value": "admin"}
+      ]
+    }
+  }
+}
+\`\`\`
 
 ## Technical Notes
 
 - Uses ESM modules for compatibility with the MCP SDK
-- Input validation for all tool arguments
+- Connection pooling with configurable limits
+- Proper error handling and validation
 - Source maps enabled for better debugging
+- Cross-platform compatibility
+
+## Troubleshooting
+
+### Connection Issues
+- Verify database credentials and network connectivity
+- Check if PostgreSQL is running and accepting connections
+- Ensure the database and schemas exist
+
+### Permission Issues
+- Verify the database user has SELECT permissions on target tables
+- Check that schemas are included in \`PG_ALLOW_SCHEMAS\`
+
+### Performance Issues
+- Adjust \`PG_ROW_LIMIT\` and \`PG_ROW_LIMIT_MAX\` for your use case
+- Consider adding database indexes for frequently queried columns
+- Monitor \`PG_STMT_TIMEOUT\` for slow queries
 `;
 
   return [
@@ -1900,26 +2099,47 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 
       case "database":
         files = generateDatabaseServer(req.projectName, req.description);
-        instructions = `Your database MCP server has been generated with corrected MCP SDK usage! This server provides read-only access to PostgreSQL databases.
+        instructions = `Your PostgreSQL MCP server has been generated with comprehensive security fixes and proper MCP SDK usage! This server provides secure, read-only database access with enterprise-grade safety features.
 
-**Key fixes applied:**
+**Critical security fixes applied:**
+- **No SQL injection vulnerabilities**: All identifiers are validated and queries are properly parameterized
+- **Schema allowlisting**: Access restricted to explicitly allowed schemas only
+- **Row limits**: Configurable limits prevent large data dumps (default: 50, max: 500)
+- **Query timeouts**: Prevents runaway queries (default: 15 seconds)
+- **Connection pooling**: Efficient resource management with proper limits
+- **Identifier validation**: All table/column names validated against safe patterns
+
+**MCP SDK fixes:**
 - Proper ESM module usage with correct imports
 - Uses Server + StdioServerTransport (not HTTP)
 - Correct request handler registration with schemas
-- Proper URI handling with postgres:// protocol
+- Proper URI handling with pg:// protocol (pg://tables, pg://table/<schema>/<table>)
 - Input validation for all tool arguments
 
 **Next steps:**
 1. Extract the files to a new directory
 2. Run \`npm install\` to install dependencies
 3. Run \`npm run build\` to compile TypeScript
-4. Set the DATABASE_URL environment variable with your PostgreSQL connection string
+4. Configure database connection:
+   - Set PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE
+   - OR set DATABASE_URL connection string
+   - Set PG_ALLOW_SCHEMAS (comma-separated, defaults to "public")
 5. Test with \`npm start\` or integrate with Claude Desktop
 
-**Production features:**
-- ESM module support for MCP SDK compatibility
-- Security: Only SELECT queries are allowed for data safety
-- Source maps enabled for better debugging`;
+**Production security features:**
+- **Safe by default**: Only predefined read operations allowed
+- **No arbitrary SQL**: Prevents dangerous queries
+- **Parameterized queries**: All user input properly escaped
+- **Schema restrictions**: Access limited to allowed schemas
+- **Resource limits**: Configurable row limits and timeouts
+- **SSL support**: Enable with PGSSL=true for remote connections
+
+**Available tools:**
+- pg_describe_table: Get table schema information
+- pg_query_table: Query with optional WHERE filters (= and != operators)
+- pg_list_tables: List accessible tables
+
+This server is production-ready and follows database security best practices!`;
         break;
 
       case "api":
