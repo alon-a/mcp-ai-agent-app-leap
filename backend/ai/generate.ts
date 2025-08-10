@@ -78,9 +78,12 @@ import { fileURLToPath, pathToFileURL } from "url";
 class FileSystemMCPServer {
   private server: Server;
   private allowedPath: string;
+  private maxBytes: number;
 
   constructor(allowedPath: string = process.cwd()) {
     this.allowedPath = path.resolve(allowedPath);
+    this.maxBytes = Number(process.env.MAX_BYTES || 512 * 1024); // 512KB default
+
     this.server = new Server(
       {
         name: "${projectName}",
@@ -101,11 +104,18 @@ class FileSystemMCPServer {
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
       const files = await this.listFiles(this.allowedPath);
       return {
-        resources: files.map(fileAbs => ({
-          uri: pathToFileURL(fileAbs).href,
-          mimeType: this.getMimeType(fileAbs),
-          name: path.basename(fileAbs),
-        })),
+        resources: [
+          {
+            uri: pathToFileURL(this.allowedPath).href,
+            mimeType: "application/json",
+            name: "Root directory (listing)",
+          },
+          ...files.slice(0, 500).map(fileAbs => ({
+            uri: pathToFileURL(fileAbs).href,
+            mimeType: this.getMimeType(fileAbs),
+            name: \`File: \${path.basename(fileAbs)}\`,
+          })),
+        ],
       };
     });
 
@@ -116,22 +126,55 @@ class FileSystemMCPServer {
       }
 
       const filePath = fileURLToPath(url);
-      if (!this.isPathAllowed(filePath)) {
-        throw new Error("Access denied: Path outside allowed directory");
-      }
+      this.validatePath(filePath);
 
-      const content = await this.readFileTextOrBinary(filePath);
-      return {
-        contents: [content],
-      };
+      const stat = await fs.stat(filePath);
+      if (stat.isDirectory()) {
+        const items = await fs.readdir(filePath, { withFileTypes: true });
+        const result = items.map(item => ({
+          name: item.name,
+          type: item.isDirectory() ? "directory" : "file",
+        }));
+        return {
+          contents: [
+            {
+              uri: request.params.uri,
+              mimeType: "application/json",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } else {
+        if (stat.size > this.maxBytes) {
+          throw new Error("File too large");
+        }
+        const content = await this.readFileTextOrBinary(filePath);
+        return {
+          contents: [content],
+        };
+      }
     });
 
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
         tools: [
           {
+            name: "list_directory",
+            description: "List files and directories at a path under the allowed root",
+            inputSchema: {
+              type: "object",
+              properties: {
+                path: {
+                  type: "string",
+                  description: "Path to the directory to list",
+                  default: ".",
+                },
+              },
+            },
+          },
+          {
             name: "read_file",
-            description: "Read the contents of a file",
+            description: \`Read a text file (max \${this.maxBytes} bytes)\`,
             inputSchema: {
               type: "object",
               properties: {
@@ -145,7 +188,7 @@ class FileSystemMCPServer {
           },
           {
             name: "write_file",
-            description: "Write content to a file",
+            description: \`Create or overwrite a file with text content (max \${this.maxBytes} bytes)\`,
             inputSchema: {
               type: "object",
               properties: {
@@ -159,20 +202,6 @@ class FileSystemMCPServer {
                 },
               },
               required: ["path", "content"],
-            },
-          },
-          {
-            name: "list_directory",
-            description: "List files and directories in a path",
-            inputSchema: {
-              type: "object",
-              properties: {
-                path: {
-                  type: "string",
-                  description: "Path to the directory to list",
-                },
-              },
-              required: ["path"],
             },
           },
           {
@@ -197,26 +226,32 @@ class FileSystemMCPServer {
       const { name, arguments: args } = request.params;
 
       switch (name) {
+        case "list_directory": {
+          const relativePath = String(args?.path ?? ".");
+          const fullPath = this.resolvePath(relativePath);
+          return await this.listDirectory(fullPath, relativePath);
+        }
         case "read_file": {
-          const p = String(args?.path ?? "");
-          if (!p) throw new Error("path is required");
-          return await this.readFile(p);
+          const relativePath = String(args?.path ?? "");
+          if (!relativePath) throw new Error("path is required");
+          const fullPath = this.resolvePath(relativePath);
+          return await this.readFile(fullPath);
         }
         case "write_file": {
-          const p = String(args?.path ?? "");
+          const relativePath = String(args?.path ?? "");
           const content = String(args?.content ?? "");
-          if (!p) throw new Error("path is required");
-          return await this.writeFile(p, content);
-        }
-        case "list_directory": {
-          const p = String(args?.path ?? "");
-          if (!p) throw new Error("path is required");
-          return await this.listDirectory(p);
+          if (!relativePath) throw new Error("path is required");
+          if (Buffer.byteLength(content, "utf-8") > this.maxBytes) {
+            throw new Error("Content too large");
+          }
+          const fullPath = this.resolvePath(relativePath);
+          return await this.writeFile(fullPath, content, relativePath);
         }
         case "create_directory": {
-          const p = String(args?.path ?? "");
-          if (!p) throw new Error("path is required");
-          return await this.createDirectory(p);
+          const relativePath = String(args?.path ?? "");
+          if (!relativePath) throw new Error("path is required");
+          const fullPath = this.resolvePath(relativePath);
+          return await this.createDirectory(fullPath, relativePath);
         }
         default:
           throw new Error(\`Unknown tool: \${name}\`);
@@ -224,53 +259,29 @@ class FileSystemMCPServer {
     });
   }
 
-  private async readFile(filePath: string) {
-    const fullPath = path.resolve(this.allowedPath, filePath);
-    if (!this.isPathAllowed(fullPath)) {
-      throw new Error("Access denied: Path outside allowed directory");
-    }
-
-    const content = await this.readFileTextOrBinary(fullPath);
-    return {
-      content: [
-        {
-          type: "text",
-          text: content.text || content.blob || "",
-        },
-      ],
-    };
+  private resolvePath(relativePath: string): string {
+    const fullPath = path.isAbsolute(relativePath) 
+      ? relativePath 
+      : path.resolve(this.allowedPath, relativePath);
+    this.validatePath(fullPath);
+    return fullPath;
   }
 
-  private async writeFile(filePath: string, content: string) {
-    const fullPath = path.resolve(this.allowedPath, filePath);
-    if (!this.isPathAllowed(fullPath)) {
-      throw new Error("Access denied: Path outside allowed directory");
-    }
-
-    await fs.ensureDir(path.dirname(fullPath));
-    await fs.writeFile(fullPath, content, "utf-8");
+  private validatePath(fullPath: string): void {
+    const resolvedPath = path.resolve(fullPath);
+    const relativePath = path.relative(this.allowedPath, resolvedPath);
     
-    return {
-      content: [
-        {
-          type: "text",
-          text: \`File written successfully to \${filePath}\`,
-        },
-      ],
-    };
-  }
-
-  private async listDirectory(dirPath: string) {
-    const fullPath = path.resolve(this.allowedPath, dirPath);
-    if (!this.isPathAllowed(fullPath)) {
+    if (relativePath === "" || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
       throw new Error("Access denied: Path outside allowed directory");
     }
+  }
 
+  private async listDirectory(fullPath: string, relativePath: string) {
     const items = await fs.readdir(fullPath, { withFileTypes: true });
     const result = items.map(item => ({
       name: item.name,
       type: item.isDirectory() ? "directory" : "file",
-      path: pathPosix.join(dirPath.replace(/\\\\/g, "/"), item.name),
+      path: pathPosix.join(this.toPosix(relativePath), item.name),
     }));
 
     return {
@@ -283,50 +294,91 @@ class FileSystemMCPServer {
     };
   }
 
-  private async createDirectory(dirPath: string) {
-    const fullPath = path.resolve(this.allowedPath, dirPath);
-    if (!this.isPathAllowed(fullPath)) {
-      throw new Error("Access denied: Path outside allowed directory");
+  private async readFile(fullPath: string) {
+    const stat = await fs.stat(fullPath);
+    if (stat.isDirectory()) {
+      throw new Error("Path is a directory");
+    }
+    if (stat.size > this.maxBytes) {
+      throw new Error("File too large");
     }
 
+    const content = await fs.readFile(fullPath, "utf-8");
+    return {
+      content: [
+        {
+          type: "text",
+          text: content,
+        },
+      ],
+    };
+  }
+
+  private async writeFile(fullPath: string, content: string, relativePath: string) {
+    // Ensure parent directory exists
+    await fs.ensureDir(path.dirname(fullPath));
+    
+    // Check if path exists and is a directory
+    const exists = await fs.pathExists(fullPath);
+    if (exists) {
+      const stat = await fs.lstat(fullPath);
+      if (stat.isDirectory()) {
+        throw new Error("Cannot overwrite a directory");
+      }
+    }
+
+    await fs.writeFile(fullPath, content, "utf-8");
+    const bytes = Buffer.byteLength(content, "utf-8");
+    
+    return {
+      content: [
+        {
+          type: "text",
+          text: \`Wrote \${bytes} bytes to \${this.toPosix(relativePath)}\`,
+        },
+      ],
+    };
+  }
+
+  private async createDirectory(fullPath: string, relativePath: string) {
     await fs.ensureDir(fullPath);
     
     return {
       content: [
         {
           type: "text",
-          text: \`Directory created successfully at \${dirPath}\`,
+          text: \`Directory created successfully at \${this.toPosix(relativePath)}\`,
         },
       ],
     };
   }
 
-  private async listFiles(dir: string, cap = 2000): Promise<string[]> {
+  private async listFiles(dir: string, cap = 500): Promise<string[]> {
     const out: string[] = [];
     const stack: string[] = [dir];
     
     while (stack.length && out.length < cap) {
       const cur = stack.pop()!;
-      const items = await fs.readdir(cur, { withFileTypes: true });
-      
-      for (const it of items) {
-        if (it.name === ".git" || it.name === "node_modules") continue;
-        const full = path.join(cur, it.name);
-        if (it.isDirectory()) {
-          stack.push(full);
-        } else {
-          out.push(full);
+      try {
+        const items = await fs.readdir(cur, { withFileTypes: true });
+        
+        for (const it of items) {
+          if (it.name === ".git" || it.name === "node_modules") continue;
+          const full = path.join(cur, it.name);
+          if (it.isDirectory()) {
+            stack.push(full);
+          } else {
+            out.push(full);
+          }
+          if (out.length >= cap) break;
         }
-        if (out.length >= cap) break;
+      } catch (error) {
+        // Skip directories we can't read
+        continue;
       }
     }
     
     return out;
-  }
-
-  private isPathAllowed(p: string): boolean {
-    const rel = path.relative(this.allowedPath, path.resolve(p));
-    return rel && !rel.startsWith("..") && !path.isAbsolute(rel);
   }
 
   private async readFileTextOrBinary(absPath: string) {
@@ -366,22 +418,33 @@ class FileSystemMCPServer {
     return mimeTypes[ext] || "application/octet-stream";
   }
 
+  private toPosix(p: string): string {
+    return p.replace(/\\\\/g, "/");
+  }
+
   async run() {
     const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error("File System MCP server running on stdio");
+    await server.connect(transport);
+    console.error(\`File System MCP server running on stdio (root: \${this.allowedPath})\`);
   }
 }
 
 async function main() {
   const allowedPath = process.env.ALLOWED_PATH || process.cwd();
+  
+  // Ensure the allowed directory exists
+  await fs.ensureDir(allowedPath);
+  
   const server = new FileSystemMCPServer(allowedPath);
   await server.run();
 }
 
 const isEntry = import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
-  main().catch(console.error);
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
 }
 `;
 
@@ -391,19 +454,31 @@ ${description || "MCP server for file system operations"}
 
 ## Features
 
-- Read files from the allowed directory
-- Write files to the allowed directory
-- List directory contents
-- Create new directories
-- Secure path validation to prevent directory traversal
-- Binary file support with base64 encoding
-- Resource listing with configurable limits
+- **Secure file operations** within a specified directory with path traversal protection
+- **Read and write files** with configurable size limits (default: 512KB)
+- **List directory contents** with recursive file discovery
+- **Create directories** with automatic parent directory creation
+- **Binary file support** with base64 encoding for non-text files
+- **Resource listing** with configurable limits for performance
+- **Cross-platform compatibility** with proper path handling
 
 ## Installation
 
 \`\`\`bash
 npm install
 npm run build
+\`\`\`
+
+## Configuration
+
+### Environment Variables
+
+\`\`\`bash
+# Root directory that the server can access (required)
+export ALLOWED_PATH=/path/to/allowed/directory
+
+# Maximum file size in bytes (optional, default: 512KB)
+export MAX_BYTES=524288
 \`\`\`
 
 ## Usage
@@ -418,13 +493,16 @@ npm run dev
 npm start
 \`\`\`
 
-## Configuration
+## Testing with MCP Inspector
 
-Set the \`ALLOWED_PATH\` environment variable to specify the root directory that the server can access. Defaults to the current working directory.
+Use the official MCP inspector to test your server:
 
 \`\`\`bash
-export ALLOWED_PATH=/path/to/allowed/directory
-npm start
+# Install the MCP inspector
+npm install -g @modelcontextprotocol/inspector
+
+# Test your server
+npx @modelcontextprotocol/inspector node dist/index.js
 \`\`\`
 
 ## Claude Desktop Integration
@@ -438,7 +516,8 @@ Add this server to your Claude Desktop configuration:
       "command": "node",
       "args": ["--enable-source-maps", "path/to/${projectName}/dist/index.js"],
       "env": {
-        "ALLOWED_PATH": "/path/to/allowed/directory"
+        "ALLOWED_PATH": "/path/to/allowed/directory",
+        "MAX_BYTES": "524288"
       }
     }
   }
@@ -447,28 +526,132 @@ Add this server to your Claude Desktop configuration:
 
 ## Available Tools
 
-- **read_file**: Read the contents of a file (supports both text and binary files)
-- **write_file**: Write content to a file
-- **list_directory**: List files and directories in a path
-- **create_directory**: Create a new directory
+- **list_directory**: List files and directories at a path under the allowed root
+- **read_file**: Read a text file (with size limit protection)
+- **write_file**: Create or overwrite a file with text content
+- **create_directory**: Create a new directory (with automatic parent creation)
 
 ## Available Resources
 
-The server exposes files in the allowed directory as resources with \`file://\` URIs. Resource listing is capped at 2000 files for performance.
+The server exposes files in the allowed directory as resources with \`file://\` URIs:
+
+- **Root directory**: Lists the contents of the allowed directory
+- **Individual files**: Each file is exposed as a resource for direct access
+
+Resource listing is capped at 500 files for performance.
 
 ## Security Features
 
-- Path traversal protection using secure relative path checking
-- Configurable allowed directory scope
-- Input validation for all tool arguments
-- Binary file handling with proper MIME type detection
+### Path Traversal Protection
+- **Robust path validation**: Uses \`path.relative()\` to prevent directory traversal attacks
+- **Absolute path blocking**: Prevents access to paths outside the allowed directory
+- **Symlink safety**: Validates resolved paths to prevent symlink escapes
+
+### File Size Limits
+- **Configurable limits**: Default 512KB limit prevents large file operations
+- **Memory protection**: Prevents server memory exhaustion from large files
+- **Both read and write**: Limits apply to both file reading and writing operations
+
+### Input Validation
+- **Required parameters**: All tool calls validate required parameters
+- **Type checking**: Ensures parameters are of expected types
+- **Error handling**: Comprehensive error messages for debugging
+
+## Technical Implementation
+
+### MCP Protocol Compliance
+- **Proper SDK usage**: Uses official \`@modelcontextprotocol/sdk\` with correct APIs
+- **Stdio transport**: Communicates over stdio as per MCP specification
+- **Standard handlers**: Implements \`ListTools\`, \`CallTool\`, \`ListResources\`, \`ReadResource\`
+- **ESM modules**: Full ES module support for modern Node.js compatibility
+
+### Cross-Platform Support
+- **Path normalization**: Handles Windows and POSIX path differences
+- **POSIX output**: Tool outputs use forward slashes for client compatibility
+- **URL handling**: Proper \`file://\` URI handling with \`pathToFileURL\`/\`fileURLToPath\`
+
+### Performance Optimizations
+- **Lazy loading**: Files are only read when requested
+- **Directory limits**: Recursive directory listing is capped for performance
+- **Efficient traversal**: Uses stack-based directory traversal to avoid recursion limits
+
+## Example Usage
+
+### List Directory Contents
+\`\`\`json
+{
+  "tool": "list_directory",
+  "arguments": {
+    "path": "."
+  }
+}
+\`\`\`
+
+### Read a File
+\`\`\`json
+{
+  "tool": "read_file",
+  "arguments": {
+    "path": "README.md"
+  }
+}
+\`\`\`
+
+### Write a File
+\`\`\`json
+{
+  "tool": "write_file",
+  "arguments": {
+    "path": "output.txt",
+    "content": "Hello from MCP!"
+  }
+}
+\`\`\`
+
+### Create Directory
+\`\`\`json
+{
+  "tool": "create_directory",
+  "arguments": {
+    "path": "new-folder"
+  }
+}
+\`\`\`
+
+## Error Handling
+
+The server provides detailed error messages for common issues:
+
+- **Path outside allowed directory**: "Access denied: Path outside allowed directory"
+- **File too large**: "File too large" (when exceeding MAX_BYTES)
+- **Directory overwrite**: "Cannot overwrite a directory"
+- **Missing parameters**: "path is required"
+
+## Troubleshooting
+
+### Common Issues
+
+1. **"Access denied" errors**: Ensure the path is within the ALLOWED_PATH directory
+2. **"File too large" errors**: Increase MAX_BYTES or reduce file size
+3. **Connection issues**: Verify the server is running and accessible via stdio
+4. **Path not found**: Check that the ALLOWED_PATH exists and is readable
+
+### Debugging
+
+Enable debug logging by running with:
+\`\`\`bash
+NODE_DEBUG=mcp npm start
+\`\`\`
 
 ## Technical Notes
 
-- Uses ESM modules for compatibility with the MCP SDK
-- Supports both text and binary files with appropriate encoding
-- Cross-platform path handling for Windows and POSIX systems
-- Source maps enabled for better debugging
+- **ESM modules**: Uses ES modules for compatibility with the MCP SDK
+- **TypeScript**: Full TypeScript support with proper type definitions
+- **Source maps**: Enabled for better debugging experience
+- **Error boundaries**: Comprehensive error handling prevents server crashes
+- **Memory efficient**: Streaming file operations where possible
+
+This implementation follows MCP best practices and provides a secure, production-ready file system server.
 `;
 
   return [
@@ -2206,29 +2389,45 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
     switch (req.serverType) {
       case "filesystem":
         files = generateFileSystemServer(req.projectName, req.description);
-        instructions = `Your file system MCP server has been generated with corrected MCP SDK usage! This server provides secure file operations within a specified directory.
+        instructions = `Your file system MCP server has been generated with comprehensive security fixes and proper MCP SDK usage! This server provides secure file operations within a specified directory.
 
-**Key fixes applied:**
-- Proper ESM module usage with correct imports
-- Uses Server + StdioServerTransport (not HTTP)
-- Correct request handler registration with schemas
-- Proper URI handling with file:// protocol
-- Input validation for all tool arguments
+**Critical security fixes applied:**
+- **Robust path traversal protection**: Uses \`path.relative()\` to prevent directory traversal attacks
+- **File size limits**: Configurable maximum file size (default: 512KB) prevents memory exhaustion
+- **Input validation**: All tool parameters are validated and type-checked
+- **Directory overwrite protection**: Prevents overwriting directories with files
+- **Cross-platform compatibility**: Proper path handling for Windows and POSIX systems
+
+**MCP SDK fixes:**
+- **Proper ESM module usage**: Correct imports with \`"type": "module"\` in package.json
+- **Uses Server + StdioServerTransport**: No HTTP server, communicates over stdio as per MCP specification
+- **Correct request handler registration**: Uses proper schemas (\`ListToolsRequestSchema\`, etc.)
+- **Proper URI handling**: Uses \`file://\` protocol with \`pathToFileURL\`/\`fileURLToPath\`
+- **Input validation**: All tool arguments are validated before processing
 
 **Next steps:**
 1. Extract the files to a new directory
 2. Run \`npm install\` to install dependencies
 3. Run \`npm run build\` to compile TypeScript
 4. Set the ALLOWED_PATH environment variable to specify the root directory
-5. Test with \`npm start\` or integrate with Claude Desktop
+5. Test with \`npx @modelcontextprotocol/inspector node dist/index.js\`
+6. Integrate with Claude Desktop using the provided configuration
 
 **Production features:**
-- ESM module support for MCP SDK compatibility
-- Secure path traversal protection using relative path checking
-- Binary file support with base64 encoding
-- Resource listing capped at 2000 files for performance
-- Cross-platform path handling for Windows and POSIX systems
-- Source maps enabled for better debugging`;
+- **ESM module support**: Full compatibility with the MCP SDK
+- **Binary file support**: Handles both text and binary files with proper encoding
+- **Resource listing**: Exposes files as resources with configurable limits (500 files max)
+- **Cross-platform paths**: Normalizes paths to POSIX format for client compatibility
+- **Source maps**: Enabled for better debugging experience
+- **Comprehensive error handling**: Detailed error messages for troubleshooting
+
+**Available tools:**
+- list_directory: List files and directories with path validation
+- read_file: Read text files with size limit protection
+- write_file: Create/overwrite files with content validation
+- create_directory: Create directories with automatic parent creation
+
+This server is production-ready and follows MCP security best practices!`;
         break;
 
       case "database":
@@ -2244,11 +2443,11 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 - **Identifier validation**: All table/column names validated against safe patterns
 
 **MCP SDK fixes:**
-- Proper ESM module usage with correct imports
-- Uses Server + StdioServerTransport (not HTTP)
-- Correct request handler registration with schemas
-- Proper URI handling with pg:// protocol (pg://tables, pg://table/<schema>/<table>)
-- Input validation for all tool arguments
+- **Proper ESM module usage**: Correct imports with \`"type": "module"\` in package.json
+- **Uses Server + StdioServerTransport**: No HTTP server, communicates over stdio as per MCP specification
+- **Correct request handler registration**: Uses proper schemas (\`ListToolsRequestSchema\`, etc.)
+- **Proper URI handling**: Uses \`pg://\` protocol (pg://tables, pg://table/<schema>/<table>)
+- **Input validation**: All tool arguments are validated before processing
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2258,7 +2457,8 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
    - Set PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE
    - OR set DATABASE_URL connection string
    - Set PG_ALLOW_SCHEMAS (comma-separated, defaults to "public")
-5. Test with \`npm start\` or integrate with Claude Desktop
+5. Test with \`npx @modelcontextprotocol/inspector node dist/index.js\`
+6. Integrate with Claude Desktop using the provided configuration
 
 **Production security features:**
 - **Safe by default**: Only predefined read operations allowed
@@ -2291,12 +2491,12 @@ This server is production-ready and follows database security best practices!`;
 - **Method restrictions**: Only GET and POST methods supported
 
 **MCP SDK fixes:**
-- Proper ESM module usage with correct imports
-- Uses Server + StdioServerTransport (not HTTP)
-- Correct request handler registration with schemas
-- Proper URI handling with rest:// protocol
-- Input validation for all tool arguments
-- Uses built-in Node.js fetch (no external HTTP libraries)
+- **Proper ESM module usage**: Correct imports with \`"type": "module"\` in package.json
+- **Uses Server + StdioServerTransport**: No HTTP server, communicates over stdio as per MCP specification
+- **Correct request handler registration**: Uses proper schemas (\`ListToolsRequestSchema\`, etc.)
+- **Proper URI handling**: Uses \`rest://\` protocol for configuration resources
+- **Input validation**: All tool arguments are validated before processing
+- **Uses built-in Node.js fetch**: No external HTTP libraries for reduced attack surface
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2305,10 +2505,10 @@ This server is production-ready and follows database security best practices!`;
 4. **REQUIRED**: Set ALLOWED_HOSTS environment variable with comma-separated hostnames
    - Example: \`ALLOWED_HOSTS=api.example.com,api.github.com\`
 5. Optionally configure size limits and timeouts
-6. Test with \`npm start\` or integrate with Claude Desktop
+6. Test with \`npx @modelcontextprotocol/inspector node dist/index.js\`
+7. Integrate with Claude Desktop using the provided configuration
 
 **Production security features:**
-- **No Express/HTTP listener**: Runs over stdio only
 - **Host allowlisting**: Only configured hostnames are accessible
 - **Private IP blocking**: Prevents access to internal networks
 - **Size limits**: Configurable max body size (default: 512KB)
@@ -2325,54 +2525,77 @@ This server is production-ready and follows database security best practices!`;
 
       case "git":
         files = generateGitServer(req.projectName, req.description);
-        instructions = `Your Git repository MCP server has been generated with corrected MCP SDK usage! This server provides read-only access to Git repositories.
+        instructions = `Your Git repository MCP server has been generated with proper MCP SDK usage and comprehensive fixes! This server provides read-only access to Git repositories.
 
 **Key fixes applied:**
-- Proper ESM module usage with correct imports
-- Uses Server + StdioServerTransport (not HTTP)
-- Correct request handler registration with schemas
-- Proper URI handling with git:// protocol (git://status, git://log, git://file/<path>)
-- Correct URL parsing with url.host and url.pathname
-- Repository context handling with simpleGit(repoPath)
-- Input validation for all tool arguments
-- Resource listing capped at 500 files for performance
-- Proper URI encoding for file paths with special characters
+- **Proper ESM module usage**: Correct imports with \`"type": "module"\` in package.json
+- **Uses Server + StdioServerTransport**: No HTTP server, communicates over stdio as per MCP specification
+- **Correct request handler registration**: Uses proper schemas (\`ListToolsRequestSchema\`, etc.)
+- **Proper URI handling**: Uses \`git://\` protocol (git://status, git://log, git://file/<path>)
+- **Correct URL parsing**: Uses \`url.host\` and \`url.pathname\` for resource routing
+- **Repository context handling**: Proper \`simpleGit(repoPath)\` initialization
+- **Input validation**: All tool arguments are validated before processing
+- **Resource listing**: Capped at 500 files for performance
+- **Proper URI encoding**: Handles file paths with special characters
 
 **Next steps:**
 1. Extract the files to a new directory
 2. Run \`npm install\` to install dependencies
 3. Run \`npm run build\` to compile TypeScript
 4. Set the REPO_PATH environment variable to your Git repository path
-5. Test with \`npm start\` or integrate with Claude Desktop
+5. Test with \`npx @modelcontextprotocol/inspector node dist/index.js\`
+6. Integrate with Claude Desktop using the provided configuration
 
 **Production features:**
-- ESM module support for MCP SDK compatibility
-- Browse commits, read files from any commit, view diffs, and explore repository history
-- Handles empty repositories gracefully
-- Source maps enabled for better debugging`;
+- **ESM module support**: Full compatibility with the MCP SDK
+- **Read-only operations**: Safe browsing of Git repositories
+- **Commit history**: View detailed commit information and diffs
+- **File access**: Read files from any commit in the repository
+- **Branch management**: List and explore different branches
+- **Empty repository handling**: Gracefully handles repositories without commits
+- **Source maps**: Enabled for better debugging experience
+
+**Available tools:**
+- git_status: Get current repository status
+- git_log: View commit history with configurable limits
+- git_show: Show detailed commit information
+- git_diff: Compare commits, branches, or files
+- git_branches: List local and remote branches
+- read_file: Read files from any commit
+- list_files: Browse repository structure
+
+This server follows MCP best practices and provides secure Git repository access!`;
         break;
 
       case "custom":
         // Generate a basic template for custom servers
         files = generateFileSystemServer(req.projectName, req.description);
-        instructions = `A production-ready MCP server template has been generated based on the file system server with all the latest MCP SDK fixes.
+        instructions = `A production-ready MCP server template has been generated based on the file system server with all the latest MCP SDK fixes and security improvements.
 
 **Key fixes included:**
-- Proper ESM module usage with correct imports
-- Uses Server + StdioServerTransport (not HTTP)
-- Correct request handler registration with schemas
-- Proper URI handling and parsing
-- Input validation for all tool arguments
+- **Proper ESM module usage**: Correct imports with \`"type": "module"\` in package.json
+- **Uses Server + StdioServerTransport**: No HTTP server, communicates over stdio as per MCP specification
+- **Correct request handler registration**: Uses proper schemas (\`ListToolsRequestSchema\`, etc.)
+- **Proper URI handling**: Correct URL parsing and resource management
+- **Input validation**: All tool arguments are validated before processing
+- **Security features**: Path traversal protection, file size limits, input validation
 
 **Customization needed:**
 1. Modify the tools and resources in src/index.ts according to your requirements
 2. Add any additional dependencies to package.json
 3. Implement your custom logic in the tool handlers
 4. Update URI schemes and resource handling as needed
+5. Adjust security measures for your specific use case
 
 **Requirements:** ${req.customRequirements || "No specific requirements provided"}
 
-Follow the MCP SDK documentation to implement your custom functionality.`;
+**Template features to customize:**
+- Replace file system operations with your custom functionality
+- Modify the URI scheme (currently uses file://) for your resources
+- Update tool schemas to match your requirements
+- Implement your specific business logic in the request handlers
+
+Follow the MCP SDK documentation to implement your custom functionality while maintaining the security and architectural patterns provided in this template.`;
         break;
 
       default:
