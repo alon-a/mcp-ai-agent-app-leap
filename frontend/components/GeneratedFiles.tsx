@@ -24,15 +24,51 @@ export function GeneratedFiles({ files, instructions, onBack, projectType = "ser
   const [copiedAll, setCopiedAll] = useState(false);
   const { toast } = useToast();
 
+  const copyToClipboard = async (text: string): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (error) {
+      console.error("Clipboard API failed:", error);
+      
+      // Fallback for older browsers or when clipboard API fails
+      try {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        return true;
+      } catch (fallbackError) {
+        console.error("Fallback copy method also failed:", fallbackError);
+        return false;
+      }
+    }
+  };
+
   const handleCopyFile = async (file: ProjectFile) => {
-    await navigator.clipboard.writeText(file.content);
-    setCopiedFile(file.path);
-    setTimeout(() => setCopiedFile(null), 2000);
+    const success = await copyToClipboard(file.content);
     
-    toast({
-      title: "Copied",
-      description: `${file.path} copied to clipboard`,
-    });
+    if (success) {
+      setCopiedFile(file.path);
+      setTimeout(() => setCopiedFile(null), 2000);
+      
+      toast({
+        title: "Copied",
+        description: `${file.path} copied to clipboard`,
+      });
+    } else {
+      toast({
+        title: "Copy Failed",
+        description: "Unable to copy to clipboard. Please select and copy manually.",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleDownloadAll = () => {
@@ -62,14 +98,23 @@ export function GeneratedFiles({ files, instructions, onBack, projectType = "ser
       `=== ${file.path} ===\n${file.content}\n\n`
     ).join("");
     
-    await navigator.clipboard.writeText(allContent);
-    setCopiedAll(true);
-    setTimeout(() => setCopiedAll(false), 2000);
+    const success = await copyToClipboard(allContent);
     
-    toast({
-      title: "Copied",
-      description: "All files copied to clipboard",
-    });
+    if (success) {
+      setCopiedAll(true);
+      setTimeout(() => setCopiedAll(false), 2000);
+      
+      toast({
+        title: "Copied",
+        description: "All files copied to clipboard",
+      });
+    } else {
+      toast({
+        title: "Copy Failed",
+        description: "Unable to copy to clipboard. Please try downloading instead.",
+        variant: "destructive",
+      });
+    }
   };
 
   const getFileIcon = (path: string) => {

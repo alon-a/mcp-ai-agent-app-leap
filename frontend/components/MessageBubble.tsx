@@ -1,6 +1,7 @@
 import { Bot, User, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
+import { useToast } from "@/components/ui/use-toast";
 import type { ChatMessage } from "./types";
 
 interface MessageBubbleProps {
@@ -9,12 +10,51 @@ interface MessageBubbleProps {
 
 export function MessageBubble({ message }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
+  const { toast } = useToast();
   const isUser = message.role === "user";
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(message.content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+      
+      toast({
+        title: "Copied",
+        description: "Message copied to clipboard",
+      });
+    } catch (error) {
+      console.error("Failed to copy to clipboard:", error);
+      
+      // Fallback for older browsers or when clipboard API fails
+      try {
+        const textArea = document.createElement("textarea");
+        textArea.value = message.content;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+        
+        toast({
+          title: "Copied",
+          description: "Message copied to clipboard",
+        });
+      } catch (fallbackError) {
+        console.error("Fallback copy method also failed:", fallbackError);
+        toast({
+          title: "Copy Failed",
+          description: "Unable to copy to clipboard. Please select and copy manually.",
+          variant: "destructive",
+        });
+      }
+    }
   };
 
   return (
