@@ -1353,8 +1353,6 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import simpleGit, { SimpleGit } from "simple-git";
-import fs from "fs/promises";
-import path from "path";
 import { pathToFileURL } from "url";
 
 class GitMCPServer {
@@ -1363,8 +1361,8 @@ class GitMCPServer {
   private repoPath: string;
 
   constructor(repoPath: string) {
-    this.repoPath = path.resolve(repoPath);
-    this.git = simpleGit(this.repoPath);
+    this.repoPath = repoPath;
+    this.git = simpleGit(repoPath);
 
     this.server = new Server(
       {
@@ -1402,8 +1400,8 @@ class GitMCPServer {
             mimeType: "application/json",
             name: "Git Branches",
           },
-          ...files.map(file => ({
-            uri: \`git://file/\${file}\`,
+          ...files.slice(0, 500).map(file => ({
+            uri: \`git://file/\${encodeURIComponent(file)}\`,
             mimeType: "text/plain",
             name: \`File: \${file}\`,
           })),
@@ -1417,9 +1415,10 @@ class GitMCPServer {
         throw new Error("Only git:// URIs are supported");
       }
 
-      const path = url.pathname.substring(2); // Remove leading //
+      const host = url.host;
+      const path = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
 
-      switch (path) {
+      switch (host) {
         case "status":
           const status = await this.git.status();
           return {
@@ -1456,21 +1455,21 @@ class GitMCPServer {
             ],
           };
 
+        case "file":
+          if (!path) throw new Error("Missing path in git://file/<path>");
+          const text = await this.git.show([\`HEAD:\${path}\`]);
+          return {
+            contents: [
+              {
+                uri: request.params.uri,
+                mimeType: "text/plain",
+                text: text,
+              },
+            ],
+          };
+
         default:
-          if (path.startsWith("file/")) {
-            const filePath = path.substring(5);
-            const content = await this.readFile(filePath);
-            return {
-              contents: [
-                {
-                  uri: request.params.uri,
-                  mimeType: "text/plain",
-                  text: content,
-                },
-              ],
-            };
-          }
-          throw new Error("Unknown resource");
+          throw new Error(\`Unknown resource: \${host}\`);
       }
     });
 
@@ -1612,7 +1611,7 @@ class GitMCPServer {
         case "read_file": {
           const filePath = String(args?.path ?? "");
           if (!filePath) throw new Error("path is required");
-          const commit = args?.commit ? String(args.commit) : undefined;
+          const commit = args?.commit ? String(args.commit) : "HEAD";
           return await this.readFileResult(filePath, commit);
         }
         case "list_files": {
@@ -1690,21 +1689,8 @@ class GitMCPServer {
     };
   }
 
-  private async readFile(filePath: string, commit?: string): Promise<string> {
-    const fullPath = path.join(this.repoPath, filePath);
-    
-    if (commit) {
-      // Read file from specific commit
-      const content = await this.git.show([\`\${commit}:\${filePath}\`]);
-      return content;
-    } else {
-      // Read file from working directory
-      return await fs.readFile(fullPath, "utf-8");
-    }
-  }
-
-  private async readFileResult(filePath: string, commit?: string) {
-    const content = await this.readFile(filePath, commit);
+  private async readFileResult(filePath: string, commit: string = "HEAD") {
+    const content = await this.git.show([\`\${commit}:\${filePath}\`]);
     return {
       content: [
         {
@@ -1716,30 +1702,41 @@ class GitMCPServer {
   }
 
   private async listFiles(dirPath: string = ".") {
-    const fullPath = path.join(this.repoPath, dirPath);
-    const items = await fs.readdir(fullPath, { withFileTypes: true });
-    
-    const result = items
-      .filter(item => !item.name.startsWith(".git"))
-      .map(item => ({
-        name: item.name,
-        type: item.isDirectory() ? "directory" : "file",
-        path: path.join(dirPath, item.name),
+    try {
+      const files = await this.git.raw(["ls-tree", "-r", "--name-only", "HEAD", dirPath]);
+      const result = files.split("\\n").filter(Boolean).map(file => ({
+        name: file.split("/").pop() || file,
+        type: "file",
+        path: file,
       }));
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(result, null, 2),
-        },
-      ],
-    };
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([], null, 2),
+          },
+        ],
+      };
+    }
   }
 
   private async getTrackedFiles(): Promise<string[]> {
-    const files = await this.git.raw(["ls-tree", "-r", "--name-only", "HEAD"]);
-    return files.split("\\n").filter(file => file.trim());
+    try {
+      const files = await this.git.raw(["ls-tree", "-r", "--name-only", "HEAD"]);
+      return files.split("\\n").filter(Boolean);
+    } catch (error) {
+      return []; // empty repo
+    }
   }
 
   async run() {
@@ -1854,6 +1851,8 @@ This server provides read-only access to git repositories. No write operations (
 - Uses ESM modules for compatibility with the MCP SDK
 - Input validation for all tool arguments
 - Source maps enabled for better debugging
+- Resource listing capped at 500 files for performance
+- Proper URI encoding for file paths with special characters
 `;
 
   return [
@@ -1874,7 +1873,14 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
     switch (req.serverType) {
       case "filesystem":
         files = generateFileSystemServer(req.projectName, req.description);
-        instructions = `Your file system MCP server has been generated with production-ready fixes! This server provides secure file operations within a specified directory.
+        instructions = `Your file system MCP server has been generated with corrected MCP SDK usage! This server provides secure file operations within a specified directory.
+
+**Key fixes applied:**
+- Proper ESM module usage with correct imports
+- Uses Server + StdioServerTransport (not HTTP)
+- Correct request handler registration with schemas
+- Proper URI handling with file:// protocol
+- Input validation for all tool arguments
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -1883,19 +1889,25 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 4. Set the ALLOWED_PATH environment variable to specify the root directory
 5. Test with \`npm start\` or integrate with Claude Desktop
 
-**Production improvements:**
+**Production features:**
 - ESM module support for MCP SDK compatibility
 - Secure path traversal protection using relative path checking
 - Binary file support with base64 encoding
 - Resource listing capped at 2000 files for performance
 - Cross-platform path handling for Windows and POSIX systems
-- Input validation for all tool arguments
 - Source maps enabled for better debugging`;
         break;
 
       case "database":
         files = generateDatabaseServer(req.projectName, req.description);
-        instructions = `Your database MCP server has been generated with production-ready fixes! This server provides read-only access to PostgreSQL databases.
+        instructions = `Your database MCP server has been generated with corrected MCP SDK usage! This server provides read-only access to PostgreSQL databases.
+
+**Key fixes applied:**
+- Proper ESM module usage with correct imports
+- Uses Server + StdioServerTransport (not HTTP)
+- Correct request handler registration with schemas
+- Proper URI handling with postgres:// protocol
+- Input validation for all tool arguments
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -1904,16 +1916,22 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 4. Set the DATABASE_URL environment variable with your PostgreSQL connection string
 5. Test with \`npm start\` or integrate with Claude Desktop
 
-**Production improvements:**
+**Production features:**
 - ESM module support for MCP SDK compatibility
-- Input validation for all tool arguments
-- Source maps enabled for better debugging
-- Security: Only SELECT queries are allowed for data safety`;
+- Security: Only SELECT queries are allowed for data safety
+- Source maps enabled for better debugging`;
         break;
 
       case "api":
         files = generateApiServer(req.projectName, req.description);
-        instructions = `Your API integration MCP server has been generated with production-ready fixes! This server acts as a proxy to external REST APIs.
+        instructions = `Your API integration MCP server has been generated with corrected MCP SDK usage! This server acts as a proxy to external REST APIs.
+
+**Key fixes applied:**
+- Proper ESM module usage with correct imports
+- Uses Server + StdioServerTransport (not HTTP)
+- Correct request handler registration with schemas
+- Proper URI handling with api:// protocol
+- Input validation for all tool arguments
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -1923,16 +1941,26 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 5. Optionally set API_KEY for authentication
 6. Test with \`npm start\` or integrate with Claude Desktop
 
-**Production improvements:**
+**Production features:**
 - ESM module support for MCP SDK compatibility
-- Input validation for all tool arguments
-- Source maps enabled for better debugging
-- Features: Supports GET, POST, PUT, and DELETE requests with automatic API key authentication`;
+- Supports GET, POST, PUT, and DELETE requests with automatic API key authentication
+- Source maps enabled for better debugging`;
         break;
 
       case "git":
         files = generateGitServer(req.projectName, req.description);
-        instructions = `Your Git repository MCP server has been generated with production-ready fixes! This server provides read-only access to Git repositories.
+        instructions = `Your Git repository MCP server has been generated with corrected MCP SDK usage! This server provides read-only access to Git repositories.
+
+**Key fixes applied:**
+- Proper ESM module usage with correct imports
+- Uses Server + StdioServerTransport (not HTTP)
+- Correct request handler registration with schemas
+- Proper URI handling with git:// protocol (git://status, git://log, git://file/<path>)
+- Correct URL parsing with url.host and url.pathname
+- Repository context handling with simpleGit(repoPath)
+- Input validation for all tool arguments
+- Resource listing capped at 500 files for performance
+- Proper URI encoding for file paths with special characters
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -1941,31 +1969,32 @@ export const generate = api<GenerateServerRequest, GenerateServerResponse>(
 4. Set the REPO_PATH environment variable to your Git repository path
 5. Test with \`npm start\` or integrate with Claude Desktop
 
-**Production improvements:**
+**Production features:**
 - ESM module support for MCP SDK compatibility
-- Input validation for all tool arguments
-- Source maps enabled for better debugging
-- Features: Browse commits, read files from any commit, view diffs, and explore repository history`;
+- Browse commits, read files from any commit, view diffs, and explore repository history
+- Handles empty repositories gracefully
+- Source maps enabled for better debugging`;
         break;
 
       case "custom":
         // Generate a basic template for custom servers
         files = generateFileSystemServer(req.projectName, req.description);
-        instructions = `A production-ready MCP server template has been generated based on the file system server with all the latest fixes.
+        instructions = `A production-ready MCP server template has been generated based on the file system server with all the latest MCP SDK fixes.
+
+**Key fixes included:**
+- Proper ESM module usage with correct imports
+- Uses Server + StdioServerTransport (not HTTP)
+- Correct request handler registration with schemas
+- Proper URI handling and parsing
+- Input validation for all tool arguments
 
 **Customization needed:**
 1. Modify the tools and resources in src/index.ts according to your requirements
 2. Add any additional dependencies to package.json
 3. Implement your custom logic in the tool handlers
+4. Update URI schemes and resource handling as needed
 
 **Requirements:** ${req.customRequirements || "No specific requirements provided"}
-
-**Production improvements included:**
-- ESM module support for MCP SDK compatibility
-- Secure path handling and validation
-- Binary file support
-- Input validation
-- Source maps for debugging
 
 Follow the MCP SDK documentation to implement your custom functionality.`;
         break;
