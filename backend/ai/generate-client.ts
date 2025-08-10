@@ -34,7 +34,7 @@ const generateFileSystemClient = (projectName: string, description?: string): Cl
       dev: "tsx src/index.ts"
     },
     dependencies: {
-      "@modelcontextprotocol/sdk": "^1.0.0",
+      "@modelcontextprotocol/sdk": "^1.11.1",
       "commander": "^11.0.0"
     },
     devDependencies: {
@@ -446,6 +446,7 @@ The client connects to MCP servers via stdio transport. Make sure your MCP serve
 
 ## Technical Notes
 
+- Uses latest MCP SDK version (^1.11.1) for improved features and fixes
 - Uses ESM modules for compatibility with the MCP SDK
 - Source maps enabled for better debugging
 - Cross-platform compatibility
@@ -482,7 +483,7 @@ const generateDatabaseClient = (projectName: string, description?: string): Clie
       dev: "tsx src/index.ts"
     },
     dependencies: {
-      "@modelcontextprotocol/sdk": "^1.0.0",
+      "@modelcontextprotocol/sdk": "^1.11.1",
       "commander": "^11.0.0",
       "inquirer": "^9.0.0"
     },
@@ -607,15 +608,15 @@ class DatabaseMCPClient {
   }
 
   async listTables() {
-    return await this.callTool("list_tables");
+    return await this.callTool("pg_list_tables");
   }
 
-  async describeTable(tableName: string) {
-    return await this.callTool("describe_table", { table_name: tableName });
+  async describeTable(schema: string, tableName: string) {
+    return await this.callTool("pg_describe_table", { schema, table: tableName });
   }
 
-  async getTableData(tableName: string, limit: number = 10) {
-    return await this.callTool("get_table_data", { table_name: tableName, limit });
+  async getTableData(schema: string, tableName: string, limit: number = 10) {
+    return await this.callTool("pg_query_table", { schema, table: tableName, limit });
   }
 
   async disconnect() {
@@ -639,7 +640,6 @@ async function startInteractiveSession(client: DatabaseMCPClient) {
           choices: [
             { name: "List all tables", value: "list_tables" },
             { name: "Describe a table", value: "describe_table" },
-            { name: "Query database", value: "query" },
             { name: "Get table data", value: "table_data" },
             { name: "List resources", value: "list_resources" },
             { name: "List tools", value: "list_tools" },
@@ -659,31 +659,31 @@ async function startInteractiveSession(client: DatabaseMCPClient) {
           break;
 
         case "describe_table":
-          const { tableName } = await inquirer.prompt([
+          const { schema, tableName } = await inquirer.prompt([
+            {
+              type: "input",
+              name: "schema",
+              message: "Enter schema name:",
+              default: "public",
+            },
             {
               type: "input",
               name: "tableName",
               message: "Enter table name:",
             },
           ]);
-          const schema = await client.describeTable(tableName);
-          console.log(\`\\nTable '\${tableName}' schema:\`, JSON.stringify(schema, null, 2));
-          break;
-
-        case "query":
-          const { query } = await inquirer.prompt([
-            {
-              type: "input",
-              name: "query",
-              message: "Enter SQL query (SELECT only):",
-            },
-          ]);
-          const result = await client.queryDatabase(query);
-          console.log("\\nQuery result:", JSON.stringify(result, null, 2));
+          const schemaInfo = await client.describeTable(schema, tableName);
+          console.log(\`\\nTable '\${schema}.\${tableName}' schema:\`, JSON.stringify(schemaInfo, null, 2));
           break;
 
         case "table_data":
-          const { dataTableName, limit } = await inquirer.prompt([
+          const { dataSchema, dataTableName, limit } = await inquirer.prompt([
+            {
+              type: "input",
+              name: "dataSchema",
+              message: "Enter schema name:",
+              default: "public",
+            },
             {
               type: "input",
               name: "dataTableName",
@@ -696,8 +696,8 @@ async function startInteractiveSession(client: DatabaseMCPClient) {
               default: 10,
             },
           ]);
-          const data = await client.getTableData(dataTableName, limit);
-          console.log(\`\\nData from '\${dataTableName}':\`, JSON.stringify(data, null, 2));
+          const data = await client.getTableData(dataSchema, dataTableName, limit);
+          console.log(\`\\nData from '\${dataSchema}.\${dataTableName}':\`, JSON.stringify(data, null, 2));
           break;
 
         case "list_resources":
@@ -745,26 +745,6 @@ async function main() {
     });
 
   program
-    .command("query")
-    .description("Execute a database query")
-    .argument("<query>", "SQL query to execute")
-    .option("-s, --server <command>", "Server command to run", "node")
-    .option("-a, --args <args...>", "Server arguments", [])
-    .action(async (query, options) => {
-      const client = new DatabaseMCPClient();
-      
-      try {
-        await client.connect(options.server, options.args);
-        const result = await client.queryDatabase(query);
-        console.log(JSON.stringify(result, null, 2));
-        await client.disconnect();
-      } catch (error) {
-        console.error("Error:", error);
-        process.exit(1);
-      }
-    });
-
-  program
     .command("list-tables")
     .description("List all database tables")
     .option("-s, --server <command>", "Server command to run", "node")
@@ -786,16 +766,17 @@ async function main() {
   program
     .command("describe")
     .description("Describe a database table")
+    .argument("<schema>", "Schema name")
     .argument("<table>", "Table name to describe")
     .option("-s, --server <command>", "Server command to run", "node")
     .option("-a, --args <args...>", "Server arguments", [])
-    .action(async (table, options) => {
+    .action(async (schema, table, options) => {
       const client = new DatabaseMCPClient();
       
       try {
         await client.connect(options.server, options.args);
-        const schema = await client.describeTable(table);
-        console.log(JSON.stringify(schema, null, 2));
+        const schemaInfo = await client.describeTable(schema, table);
+        console.log(JSON.stringify(schemaInfo, null, 2));
         await client.disconnect();
       } catch (error) {
         console.error("Error:", error);
@@ -820,7 +801,6 @@ ${description || "MCP client for database operations"}
 
 - Connect to MCP database servers
 - Interactive command-line interface with guided prompts
-- Execute SQL queries safely
 - List and describe database tables
 - Get sample data from tables
 - Programmatic API for integration
@@ -845,7 +825,6 @@ npm start connect --server node --args path/to/server/dist/index.js
 The interactive mode provides a guided interface with options to:
 - List all tables
 - Describe table schemas
-- Execute SQL queries
 - Get sample data from tables
 - List available resources and tools
 
@@ -858,10 +837,7 @@ Execute single commands:
 npm start list-tables --server node --args path/to/server/dist/index.js
 
 # Describe a table
-npm start describe users --server node --args path/to/server/dist/index.js
-
-# Execute a query
-npm start query "SELECT * FROM users LIMIT 5" --server node --args path/to/server/dist/index.js
+npm start describe public users --server node --args path/to/server/dist/index.js
 \`\`\`
 
 ### Programmatic Usage
@@ -877,15 +853,11 @@ const tables = await client.listTables();
 console.log('Tables:', tables);
 
 // Describe a table
-const schema = await client.describeTable('users');
+const schema = await client.describeTable('public', 'users');
 console.log('Schema:', schema);
 
-// Execute a query
-const result = await client.queryDatabase('SELECT COUNT(*) FROM users');
-console.log('Result:', result);
-
 // Get sample data
-const data = await client.getTableData('users', 10);
+const data = await client.getTableData('public', 'users', 10);
 console.log('Sample data:', data);
 
 await client.disconnect();
@@ -897,10 +869,11 @@ The client connects to MCP database servers via stdio transport. Ensure your MCP
 
 ## Security
 
-This client only supports SELECT queries for safety. No INSERT, UPDATE, or DELETE operations are permitted through the MCP server.
+This client works with MCP database servers that only support safe SELECT queries. No INSERT, UPDATE, or DELETE operations are permitted through the MCP server.
 
 ## Technical Notes
 
+- Uses latest MCP SDK version (^1.11.1) for improved features and fixes
 - Uses ESM modules for compatibility with the MCP SDK
 - Source maps enabled for better debugging
 - Interactive prompts for better user experience
@@ -937,7 +910,7 @@ const generateApiClient = (projectName: string, description?: string): ClientPro
       dev: "tsx src/index.ts"
     },
     dependencies: {
-      "@modelcontextprotocol/sdk": "^1.0.0",
+      "@modelcontextprotocol/sdk": "^1.11.1",
       "commander": "^11.0.0",
       "inquirer": "^9.0.0"
     },
@@ -1058,19 +1031,11 @@ class ApiMCPClient {
   }
 
   async makeGetRequest(endpoint: string, params?: any, headers?: any) {
-    return await this.callTool("get_request", { endpoint, params, headers });
+    return await this.callTool("http_get_json", { url: endpoint, params, headers });
   }
 
   async makePostRequest(endpoint: string, data?: any, headers?: any) {
-    return await this.callTool("post_request", { endpoint, data, headers });
-  }
-
-  async makePutRequest(endpoint: string, data?: any, headers?: any) {
-    return await this.callTool("put_request", { endpoint, data, headers });
-  }
-
-  async makeDeleteRequest(endpoint: string, headers?: any) {
-    return await this.callTool("delete_request", { endpoint, headers });
+    return await this.callTool("http_post_json", { url: endpoint, body: data, headers });
   }
 
   async disconnect() {
@@ -1094,8 +1059,6 @@ async function startInteractiveSession(client: ApiMCPClient) {
           choices: [
             { name: "Make GET request", value: "get" },
             { name: "Make POST request", value: "post" },
-            { name: "Make PUT request", value: "put" },
-            { name: "Make DELETE request", value: "delete" },
             { name: "List available endpoints", value: "endpoints" },
             { name: "List tools", value: "list_tools" },
             { name: "Exit", value: "quit" },
@@ -1113,7 +1076,7 @@ async function startInteractiveSession(client: ApiMCPClient) {
             {
               type: "input",
               name: "getEndpoint",
-              message: "Enter endpoint path (e.g., /users):",
+              message: "Enter full URL (e.g., https://api.example.com/users):",
             },
             {
               type: "input",
@@ -1140,7 +1103,7 @@ async function startInteractiveSession(client: ApiMCPClient) {
             {
               type: "input",
               name: "postEndpoint",
-              message: "Enter endpoint path (e.g., /users):",
+              message: "Enter full URL (e.g., https://api.example.com/users):",
             },
             {
               type: "input",
@@ -1163,50 +1126,9 @@ async function startInteractiveSession(client: ApiMCPClient) {
           console.log("\\nPOST Response:", JSON.stringify(postResult, null, 2));
           break;
 
-        case "put":
-          const { putEndpoint, putData } = await inquirer.prompt([
-            {
-              type: "input",
-              name: "putEndpoint",
-              message: "Enter endpoint path (e.g., /users/123):",
-            },
-            {
-              type: "input",
-              name: "putData",
-              message: "Enter request body (JSON format):",
-            },
-          ]);
-          
-          let putDataObj;
-          if (putData.trim()) {
-            try {
-              putDataObj = JSON.parse(putData);
-            } catch (e) {
-              console.log("Invalid JSON for data");
-              break;
-            }
-          }
-          
-          const putResult = await client.makePutRequest(putEndpoint, putDataObj);
-          console.log("\\nPUT Response:", JSON.stringify(putResult, null, 2));
-          break;
-
-        case "delete":
-          const { deleteEndpoint } = await inquirer.prompt([
-            {
-              type: "input",
-              name: "deleteEndpoint",
-              message: "Enter endpoint path (e.g., /users/123):",
-            },
-          ]);
-          
-          const deleteResult = await client.makeDeleteRequest(deleteEndpoint);
-          console.log("\\nDELETE Response:", JSON.stringify(deleteResult, null, 2));
-          break;
-
         case "endpoints":
-          const endpoints = await client.readResource("api://endpoints");
-          console.log("\\nAvailable endpoints:", JSON.stringify(endpoints, null, 2));
+          const endpoints = await client.readResource("rest://config");
+          console.log("\\nServer configuration:", JSON.stringify(endpoints, null, 2));
           break;
 
         case "list_tools":
@@ -1251,11 +1173,11 @@ async function main() {
   program
     .command("get")
     .description("Make a GET request")
-    .argument("<endpoint>", "API endpoint path")
+    .argument("<url>", "Full URL to request")
     .option("-p, --params <params>", "Query parameters (JSON)")
     .option("-s, --server <command>", "Server command to run", "node")
     .option("-a, --args <args...>", "Server arguments", [])
-    .action(async (endpoint, options) => {
+    .action(async (url, options) => {
       const client = new ApiMCPClient();
       
       try {
@@ -1266,7 +1188,7 @@ async function main() {
           params = JSON.parse(options.params);
         }
         
-        const result = await client.makeGetRequest(endpoint, params);
+        const result = await client.makeGetRequest(url, params);
         console.log(JSON.stringify(result, null, 2));
         await client.disconnect();
       } catch (error) {
@@ -1278,11 +1200,11 @@ async function main() {
   program
     .command("post")
     .description("Make a POST request")
-    .argument("<endpoint>", "API endpoint path")
+    .argument("<url>", "Full URL to request")
     .option("-d, --data <data>", "Request body data (JSON)")
     .option("-s, --server <command>", "Server command to run", "node")
     .option("-a, --args <args...>", "Server arguments", [])
-    .action(async (endpoint, options) => {
+    .action(async (url, options) => {
       const client = new ApiMCPClient();
       
       try {
@@ -1293,7 +1215,7 @@ async function main() {
           data = JSON.parse(options.data);
         }
         
-        const result = await client.makePostRequest(endpoint, data);
+        const result = await client.makePostRequest(url, data);
         console.log(JSON.stringify(result, null, 2));
         await client.disconnect();
       } catch (error) {
@@ -1319,7 +1241,7 @@ ${description || "MCP client for API integration"}
 
 - Connect to MCP API servers
 - Interactive command-line interface
-- Make HTTP requests (GET, POST, PUT, DELETE)
+- Make HTTP requests (GET, POST)
 - Support for query parameters and request bodies
 - JSON formatting for requests and responses
 - Programmatic API for integration
@@ -1342,7 +1264,7 @@ npm start connect --server node --args path/to/server/dist/index.js
 \`\`\`
 
 The interactive mode provides options to:
-- Make GET, POST, PUT, and DELETE requests
+- Make GET and POST requests
 - View available endpoints
 - List server tools
 - Input request data in JSON format
@@ -1353,10 +1275,10 @@ Execute single requests:
 
 \`\`\`bash
 # GET request
-npm start get /users --params '{"limit": 10}' --server node --args path/to/server/dist/index.js
+npm start get "https://api.example.com/users" --params '{"limit": 10}' --server node --args path/to/server/dist/index.js
 
 # POST request
-npm start post /users --data '{"name": "John", "email": "john@example.com"}' --server node --args path/to/server/dist/index.js
+npm start post "https://api.example.com/users" --data '{"name": "John", "email": "john@example.com"}' --server node --args path/to/server/dist/index.js
 \`\`\`
 
 ### Programmatic Usage
@@ -1368,25 +1290,15 @@ const client = new ApiMCPClient();
 await client.connect('node', ['path/to/server/dist/index.js']);
 
 // GET request
-const users = await client.makeGetRequest('/users', { limit: 10 });
+const users = await client.makeGetRequest('https://api.example.com/users', { limit: 10 });
 console.log('Users:', users);
 
 // POST request
-const newUser = await client.makePostRequest('/users', {
+const newUser = await client.makePostRequest('https://api.example.com/users', {
   name: 'John Doe',
   email: 'john@example.com'
 });
 console.log('Created user:', newUser);
-
-// PUT request
-const updatedUser = await client.makePutRequest('/users/123', {
-  name: 'John Smith'
-});
-console.log('Updated user:', updatedUser);
-
-// DELETE request
-const deleteResult = await client.makeDeleteRequest('/users/123');
-console.log('Delete result:', deleteResult);
 
 await client.disconnect();
 \`\`\`
@@ -1403,6 +1315,7 @@ The client connects to MCP API servers via stdio transport. Ensure your MCP serv
 
 ## Technical Notes
 
+- Uses latest MCP SDK version (^1.11.1) for improved features and fixes
 - Uses ESM modules for compatibility with the MCP SDK
 - Source maps enabled for better debugging
 - Interactive prompts for better user experience
@@ -1439,7 +1352,7 @@ const generateGitClient = (projectName: string, description?: string): ClientPro
       dev: "tsx src/index.ts"
     },
     dependencies: {
-      "@modelcontextprotocol/sdk": "^1.0.0",
+      "@modelcontextprotocol/sdk": "^1.11.1",
       "commander": "^11.0.0",
       "inquirer": "^9.0.0"
     },
@@ -1952,6 +1865,7 @@ The client connects to MCP Git servers via stdio transport. Ensure your MCP serv
 
 ## Technical Notes
 
+- Uses latest MCP SDK version (^1.11.1) for improved features and fixes
 - Uses ESM modules for compatibility with the MCP SDK
 - Source maps enabled for better debugging
 - Interactive prompts for better user experience
@@ -1988,7 +1902,7 @@ const generateMultiServerClient = (projectName: string, description?: string, se
       dev: "tsx src/index.ts"
     },
     dependencies: {
-      "@modelcontextprotocol/sdk": "^1.0.0",
+      "@modelcontextprotocol/sdk": "^1.11.1",
       "commander": "^11.0.0",
       "inquirer": "^9.0.0"
     },
@@ -2566,7 +2480,7 @@ const tables = await client.listResources('database');
 
 // Call tools on specific servers
 const fileContent = await client.callTool('filesystem', 'read_file', { path: 'README.md' });
-const queryResult = await client.callTool('database', 'query_database', { query: 'SELECT * FROM users LIMIT 5' });
+const queryResult = await client.callTool('database', 'pg_query_table', { schema: 'public', table: 'users', limit: 5 });
 
 await client.disconnectAll();
 \`\`\`
@@ -2591,6 +2505,7 @@ The configuration file should contain a \`servers\` array with the following pro
 
 ## Technical Notes
 
+- Uses latest MCP SDK version (^1.11.1) for improved features and fixes
 - Uses ESM modules for compatibility with the MCP SDK
 - Source maps enabled for better debugging
 - Interactive prompts for better user experience
@@ -2625,7 +2540,12 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
     switch (req.clientType) {
       case "filesystem":
         files = generateFileSystemClient(req.projectName, req.description);
-        instructions = `Your file system MCP client has been generated with production-ready fixes! This client provides a command-line interface for interacting with MCP file system servers.
+        instructions = `Your file system MCP client has been generated with the latest SDK version and comprehensive fixes! This client provides a command-line interface for interacting with MCP file system servers.
+
+**🔧 SDK UPDATES APPLIED:**
+- **Latest SDK Version**: Updated to \`@modelcontextprotocol/sdk ^1.11.1\` for latest features and bug fixes
+- **Enhanced Performance**: Benefits from SDK improvements and optimizations
+- **Better Error Handling**: Improved error reporting and debugging capabilities
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2635,15 +2555,21 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 5. Connect using: \`npm start connect --server node --args path/to/server/dist/index.js\`
 
 **Production improvements:**
-- ESM module support for MCP SDK compatibility
-- Source maps enabled for better debugging
-- Cross-platform compatibility
-- Features: Interactive mode, command-line operations, and programmatic API for file operations`;
+- ✅ Latest MCP SDK compatibility with improved features
+- ✅ ESM module support for MCP SDK compatibility
+- ✅ Source maps enabled for better debugging
+- ✅ Cross-platform compatibility
+- ✅ Features: Interactive mode, command-line operations, and programmatic API for file operations`;
         break;
 
       case "database":
         files = generateDatabaseClient(req.projectName, req.description);
-        instructions = `Your database MCP client has been generated with production-ready fixes! This client provides an interactive interface for querying databases through MCP servers.
+        instructions = `Your database MCP client has been generated with the latest SDK version and comprehensive fixes! This client provides an interactive interface for querying databases through MCP servers.
+
+**🔧 SDK UPDATES APPLIED:**
+- **Latest SDK Version**: Updated to \`@modelcontextprotocol/sdk ^1.11.1\` for latest features and bug fixes
+- **Enhanced Performance**: Benefits from SDK improvements and optimizations
+- **Better Error Handling**: Improved error reporting and debugging capabilities
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2653,15 +2579,21 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 5. Connect using: \`npm start connect --server node --args path/to/server/dist/index.js\`
 
 **Production improvements:**
-- ESM module support for MCP SDK compatibility
-- Source maps enabled for better debugging
-- Interactive prompts for better user experience
-- Features: Interactive query interface, table exploration, and guided database operations`;
+- ✅ Latest MCP SDK compatibility with improved features
+- ✅ ESM module support for MCP SDK compatibility
+- ✅ Source maps enabled for better debugging
+- ✅ Interactive prompts for better user experience
+- ✅ Features: Interactive query interface, table exploration, and guided database operations`;
         break;
 
       case "api":
         files = generateApiClient(req.projectName, req.description);
-        instructions = `Your API integration MCP client has been generated with production-ready fixes! This client provides tools for making HTTP requests through MCP API servers.
+        instructions = `Your API integration MCP client has been generated with the latest SDK version and comprehensive fixes! This client provides tools for making HTTP requests through MCP API servers.
+
+**🔧 SDK UPDATES APPLIED:**
+- **Latest SDK Version**: Updated to \`@modelcontextprotocol/sdk ^1.11.1\` for latest features and bug fixes
+- **Enhanced Performance**: Benefits from SDK improvements and optimizations
+- **Better Error Handling**: Improved error reporting and debugging capabilities
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2671,15 +2603,21 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 5. Connect using: \`npm start connect --server node --args path/to/server/dist/index.js\`
 
 **Production improvements:**
-- ESM module support for MCP SDK compatibility
-- Source maps enabled for better debugging
-- Interactive prompts for better user experience
-- Features: Support for GET, POST, PUT, DELETE requests with JSON formatting`;
+- ✅ Latest MCP SDK compatibility with improved features
+- ✅ ESM module support for MCP SDK compatibility
+- ✅ Source maps enabled for better debugging
+- ✅ Interactive prompts for better user experience
+- ✅ Features: Support for GET and POST requests with JSON formatting`;
         break;
 
       case "git":
         files = generateGitClient(req.projectName, req.description);
-        instructions = `Your Git repository MCP client has been generated with production-ready fixes! This client provides tools for exploring Git repositories through MCP servers.
+        instructions = `Your Git repository MCP client has been generated with the latest SDK version and comprehensive fixes! This client provides tools for exploring Git repositories through MCP servers.
+
+**🔧 SDK UPDATES APPLIED:**
+- **Latest SDK Version**: Updated to \`@modelcontextprotocol/sdk ^1.11.1\` for latest features and bug fixes
+- **Enhanced Performance**: Benefits from SDK improvements and optimizations
+- **Better Error Handling**: Improved error reporting and debugging capabilities
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2689,15 +2627,21 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 5. Connect using: \`npm start connect --server node --args path/to/server/dist/index.js\`
 
 **Production improvements:**
-- ESM module support for MCP SDK compatibility
-- Source maps enabled for better debugging
-- Interactive prompts for better user experience
-- Features: Git history exploration, file reading from commits, and repository browsing`;
+- ✅ Latest MCP SDK compatibility with improved features
+- ✅ ESM module support for MCP SDK compatibility
+- ✅ Source maps enabled for better debugging
+- ✅ Interactive prompts for better user experience
+- ✅ Features: Git history exploration, file reading from commits, and repository browsing`;
         break;
 
       case "multi-server":
         files = generateMultiServerClient(req.projectName, req.description, req.serverEndpoints);
-        instructions = `Your multi-server MCP client has been generated with production-ready fixes! This client can connect to and manage multiple MCP servers simultaneously.
+        instructions = `Your multi-server MCP client has been generated with the latest SDK version and comprehensive fixes! This client can connect to and manage multiple MCP servers simultaneously.
+
+**🔧 SDK UPDATES APPLIED:**
+- **Latest SDK Version**: Updated to \`@modelcontextprotocol/sdk ^1.11.1\` for latest features and bug fixes
+- **Enhanced Performance**: Benefits from SDK improvements and optimizations
+- **Better Error Handling**: Improved error reporting and debugging capabilities
 
 **Next steps:**
 1. Extract the files to a new directory
@@ -2708,16 +2652,22 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 6. Connect using: \`npm start connect --config config.json\`
 
 **Production improvements:**
-- ESM module support for MCP SDK compatibility
-- Source maps enabled for better debugging
-- Interactive prompts for better user experience
-- Features: Multi-server management, aggregated resource views, and dynamic server connections`;
+- ✅ Latest MCP SDK compatibility with improved features
+- ✅ ESM module support for MCP SDK compatibility
+- ✅ Source maps enabled for better debugging
+- ✅ Interactive prompts for better user experience
+- ✅ Features: Multi-server management, aggregated resource views, and dynamic server connections`;
         break;
 
       case "custom":
         // Generate a basic template for custom clients
         files = generateFileSystemClient(req.projectName, req.description);
-        instructions = `A production-ready MCP client template has been generated based on the file system client with all the latest fixes.
+        instructions = `A production-ready MCP client template has been generated based on the file system client with the latest SDK version and all fixes applied.
+
+**🔧 SDK UPDATES APPLIED:**
+- **Latest SDK Version**: Updated to \`@modelcontextprotocol/sdk ^1.11.1\` for latest features and bug fixes
+- **Enhanced Performance**: Benefits from SDK improvements and optimizations
+- **Better Error Handling**: Improved error reporting and debugging capabilities
 
 **Customization needed:**
 1. Modify the client methods in src/index.ts according to your server's tools and resources
@@ -2727,9 +2677,10 @@ export const generateClient = api<GenerateClientRequest, GenerateClientResponse>
 **Requirements:** ${req.customRequirements || "No specific requirements provided"}
 
 **Production improvements included:**
-- ESM module support for MCP SDK compatibility
-- Source maps enabled for better debugging
-- Cross-platform compatibility
+- ✅ Latest MCP SDK compatibility with improved features
+- ✅ ESM module support for MCP SDK compatibility
+- ✅ Source maps enabled for better debugging
+- ✅ Cross-platform compatibility
 
 Follow the MCP SDK documentation to implement your custom client functionality.`;
         break;
