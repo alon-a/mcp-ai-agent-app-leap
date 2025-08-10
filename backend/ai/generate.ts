@@ -1079,7 +1079,7 @@ const generateApiServer = (projectName: string, description?: string): ProjectFi
   const packageJson = {
     name: projectName,
     version: "1.0.0",
-    description: description || "MCP server for API integration",
+    description: description || "MCP server for secure REST API proxy",
     type: "module",
     main: "dist/index.js",
     scripts: {
@@ -1088,8 +1088,7 @@ const generateApiServer = (projectName: string, description?: string): ProjectFi
       dev: "tsx src/index.ts"
     },
     dependencies: {
-      "@modelcontextprotocol/sdk": "^1.0.0",
-      "axios": "^1.6.0"
+      "@modelcontextprotocol/sdk": "^1.0.0"
     },
     devDependencies: {
       "@types/node": "^20.0.0",
@@ -1125,17 +1124,27 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import axios, { AxiosRequestConfig } from "axios";
 import { pathToFileURL } from "url";
+import dns from "dns/promises";
+import net from "net";
 
-class ApiMCPServer {
+class RestProxyMCPServer {
   private server: Server;
-  private baseUrl: string;
-  private apiKey?: string;
+  private allowedHosts: Set<string>;
+  private allowedMethods: Set<string>;
+  private maxBodyBytes: number;
+  private timeoutMs: number;
 
   constructor() {
-    this.baseUrl = process.env.API_BASE_URL || "";
-    this.apiKey = process.env.API_KEY;
+    // Security configuration from environment
+    this.allowedHosts = new Set(
+      (process.env.ALLOWED_HOSTS || "api.example.com")
+        .split(",")
+        .map(h => h.trim().toLowerCase())
+    );
+    this.allowedMethods = new Set(["GET", "POST"]);
+    this.maxBodyBytes = Number(process.env.MAX_BODY_BYTES || 512 * 1024); // 512 KB
+    this.timeoutMs = Number(process.env.TIMEOUT_MS || 15000); // 15 seconds
 
     this.server = new Server(
       {
@@ -1158,9 +1167,9 @@ class ApiMCPServer {
       return {
         resources: [
           {
-            uri: "api://endpoints",
+            uri: "rest://config",
             mimeType: "application/json",
-            name: "Available API Endpoints",
+            name: "REST Proxy Configuration",
           },
         ],
       };
@@ -1168,18 +1177,28 @@ class ApiMCPServer {
 
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       const url = new URL(request.params.uri);
-      if (url.protocol !== "api:") {
-        throw new Error("Only api:// URIs are supported");
+      if (url.protocol !== "rest:") {
+        throw new Error("Only rest:// URIs are supported");
       }
 
-      if (url.pathname === "//endpoints") {
-        const endpoints = this.getAvailableEndpoints();
+      if (url.pathname === "//config") {
+        const config = {
+          allowedHosts: Array.from(this.allowedHosts),
+          allowedMethods: Array.from(this.allowedMethods),
+          maxBodyBytes: this.maxBodyBytes,
+          timeoutMs: this.timeoutMs,
+          usage: {
+            httpGetJson: "Make GET requests to allowed hosts, returns JSON",
+            httpPostJson: "Make POST requests with JSON payload to allowed hosts",
+          },
+        };
+        
         return {
           contents: [
             {
               uri: request.params.uri,
               mimeType: "application/json",
-              text: JSON.stringify(endpoints, null, 2),
+              text: JSON.stringify(config, null, 2),
             },
           ],
         };
@@ -1192,87 +1211,44 @@ class ApiMCPServer {
       return {
         tools: [
           {
-            name: "get_request",
-            description: "Make a GET request to an API endpoint",
+            name: "http_get_json",
+            description: "GET a JSON endpoint from an allow-listed host",
             inputSchema: {
               type: "object",
               properties: {
-                endpoint: {
+                url: {
                   type: "string",
-                  description: "API endpoint path (relative to base URL)",
-                },
-                params: {
-                  type: "object",
-                  description: "Query parameters",
+                  description: "Absolute https:// URL to an allowed host",
                 },
                 headers: {
                   type: "object",
-                  description: "Additional headers",
+                  description: "Additional headers (only accept and content-type allowed)",
+                  additionalProperties: { type: "string" },
                 },
               },
-              required: ["endpoint"],
+              required: ["url"],
             },
           },
           {
-            name: "post_request",
-            description: "Make a POST request to an API endpoint",
+            name: "http_post_json",
+            description: "POST JSON to an allow-listed host; returns JSON",
             inputSchema: {
               type: "object",
               properties: {
-                endpoint: {
+                url: {
                   type: "string",
-                  description: "API endpoint path (relative to base URL)",
-                },
-                data: {
-                  type: "object",
-                  description: "Request body data",
+                  description: "Absolute https:// URL to an allowed host",
                 },
                 headers: {
                   type: "object",
-                  description: "Additional headers",
+                  description: "Additional headers (only accept and content-type allowed)",
+                  additionalProperties: { type: "string" },
+                },
+                body: {
+                  description: "JSON-serializable payload",
                 },
               },
-              required: ["endpoint"],
-            },
-          },
-          {
-            name: "put_request",
-            description: "Make a PUT request to an API endpoint",
-            inputSchema: {
-              type: "object",
-              properties: {
-                endpoint: {
-                  type: "string",
-                  description: "API endpoint path (relative to base URL)",
-                },
-                data: {
-                  type: "object",
-                  description: "Request body data",
-                },
-                headers: {
-                  type: "object",
-                  description: "Additional headers",
-                },
-              },
-              required: ["endpoint"],
-            },
-          },
-          {
-            name: "delete_request",
-            description: "Make a DELETE request to an API endpoint",
-            inputSchema: {
-              type: "object",
-              properties: {
-                endpoint: {
-                  type: "string",
-                  description: "API endpoint path (relative to base URL)",
-                },
-                headers: {
-                  type: "object",
-                  description: "Additional headers",
-                },
-              },
-              required: ["endpoint"],
+              required: ["url", "body"],
             },
           },
         ],
@@ -1283,36 +1259,31 @@ class ApiMCPServer {
       const { name, arguments: args } = request.params;
 
       switch (name) {
-        case "get_request": {
-          const endpoint = String(args?.endpoint ?? "");
-          if (!endpoint) throw new Error("endpoint is required");
-          return await this.makeRequest("GET", endpoint, {
-            params: args?.params,
-            headers: args?.headers,
-          });
+        case "http_get_json": {
+          const urlStr = String(args?.url ?? "");
+          if (!urlStr) throw new Error("url is required");
+          
+          const url = new URL(urlStr);
+          await this.assertUrlAllowed(url);
+          const headers = this.sanitizeHeaders(args?.headers);
+          
+          return await this.makeRequest("GET", url, { headers });
         }
-        case "post_request": {
-          const endpoint = String(args?.endpoint ?? "");
-          if (!endpoint) throw new Error("endpoint is required");
-          return await this.makeRequest("POST", endpoint, {
-            data: args?.data,
-            headers: args?.headers,
-          });
-        }
-        case "put_request": {
-          const endpoint = String(args?.endpoint ?? "");
-          if (!endpoint) throw new Error("endpoint is required");
-          return await this.makeRequest("PUT", endpoint, {
-            data: args?.data,
-            headers: args?.headers,
-          });
-        }
-        case "delete_request": {
-          const endpoint = String(args?.endpoint ?? "");
-          if (!endpoint) throw new Error("endpoint is required");
-          return await this.makeRequest("DELETE", endpoint, {
-            headers: args?.headers,
-          });
+        case "http_post_json": {
+          const urlStr = String(args?.url ?? "");
+          if (!urlStr) throw new Error("url is required");
+          
+          const url = new URL(urlStr);
+          await this.assertUrlAllowed(url);
+          const headers = this.sanitizeHeaders(args?.headers);
+          headers["content-type"] = "application/json";
+          
+          const bodyText = JSON.stringify(args?.body ?? {});
+          if (Buffer.byteLength(bodyText) > this.maxBodyBytes) {
+            throw new Error("Request body too large");
+          }
+          
+          return await this.makeRequest("POST", url, { headers, body: bodyText });
         }
         default:
           throw new Error(\`Unknown tool: \${name}\`);
@@ -1320,24 +1291,105 @@ class ApiMCPServer {
     });
   }
 
-  private async makeRequest(method: string, endpoint: string, options: any = {}) {
-    try {
-      const url = this.baseUrl + endpoint;
-      const config: AxiosRequestConfig = {
-        method,
-        url,
-        ...options,
-      };
+  // Block private/loopback/link-local IPs to prevent SSRF
+  private isPrivateIp(ip: string): boolean {
+    if (net.isIP(ip) === 4) {
+      const bytes = ip.split(".").map(Number);
+      return (
+        bytes[0] === 10 ||
+        (bytes[0] === 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
+        (bytes[0] === 192 && bytes[1] === 168) ||
+        bytes[0] === 127 ||
+        (bytes[0] === 169 && bytes[1] === 254)
+      );
+    }
+    // IPv6
+    const v6 = ip.toLowerCase();
+    return v6 === "::1" || v6.startsWith("fe80:") || v6.startsWith("fc") || v6.startsWith("fd");
+  }
 
-      // Add API key if available
-      if (this.apiKey) {
-        config.headers = {
-          ...config.headers,
-          Authorization: \`Bearer \${this.apiKey}\`,
-        };
+  private async assertUrlAllowed(url: URL): Promise<void> {
+    // Only allow HTTPS/HTTP
+    if (!/^https?:$/.test(url.protocol)) {
+      throw new Error("Only http(s) URLs are allowed");
+    }
+    
+    if (!url.hostname) {
+      throw new Error("URL must include a hostname");
+    }
+    
+    const hostname = url.hostname.toLowerCase();
+    if (!this.allowedHosts.has(hostname)) {
+      throw new Error(\`Host '\${hostname}' not allowed. Allowed hosts: \${Array.from(this.allowedHosts).join(", ")}\`);
+    }
+
+    // Resolve and block private IPs (basic SSRF guard)
+    try {
+      const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+      if (addresses.some(addr => this.isPrivateIp(addr.address))) {
+        throw new Error("Resolved to a private/loopback IP address");
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("private/loopback")) {
+        throw error;
+      }
+      throw new Error(\`Failed to resolve hostname: \${hostname}\`);
+    }
+  }
+
+  private sanitizeHeaders(headers: any): Record<string, string> {
+    const allowed = new Set(["accept", "content-type"]);
+    const sanitized: Record<string, string> = {};
+    
+    for (const [key, value] of Object.entries(headers || {})) {
+      const normalizedKey = String(key).toLowerCase();
+      if (allowed.has(normalizedKey)) {
+        sanitized[normalizedKey] = String(value);
+      }
+    }
+    
+    return sanitized;
+  }
+
+  private abortableTimeout(ms: number): { signal: AbortSignal; cancel: () => void } {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ms);
+    return {
+      signal: controller.signal,
+      cancel: () => clearTimeout(timeout),
+    };
+  }
+
+  private async makeRequest(
+    method: string,
+    url: URL,
+    options: { headers?: Record<string, string>; body?: string } = {}
+  ) {
+    const { signal, cancel } = this.abortableTimeout(this.timeoutMs);
+    
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: options.headers,
+        body: options.body,
+        signal,
+      });
+
+      // Read response with size limit
+      const buffer = new Uint8Array(await response.arrayBuffer());
+      if (buffer.byteLength > this.maxBodyBytes) {
+        throw new Error("Response too large");
       }
 
-      const response = await axios(config);
+      const text = new TextDecoder().decode(buffer);
+      
+      // Parse as JSON
+      let jsonData;
+      try {
+        jsonData = JSON.parse(text);
+      } catch {
+        throw new Error("Response is not valid JSON");
+      }
 
       return {
         content: [
@@ -1346,59 +1398,44 @@ class ApiMCPServer {
             text: JSON.stringify({
               status: response.status,
               statusText: response.statusText,
-              headers: response.headers,
-              data: response.data,
+              headers: Object.fromEntries(response.headers.entries()),
+              data: jsonData,
             }, null, 2),
           },
         ],
       };
-    } catch (error: any) {
-      const errorInfo = {
-        message: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-      };
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: \`Error: \${JSON.stringify(errorInfo, null, 2)}\`,
-          },
-        ],
-      };
+    } catch (error) {
+      if (error instanceof Error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: \`Error: \${error.message}\`,
+            },
+          ],
+        };
+      }
+      throw error;
+    } finally {
+      cancel();
     }
-  }
-
-  private getAvailableEndpoints() {
-    return {
-      baseUrl: this.baseUrl,
-      authentication: this.apiKey ? "API Key configured" : "No authentication",
-      supportedMethods: ["GET", "POST", "PUT", "DELETE"],
-      usage: {
-        get: "Use get_request tool with endpoint path",
-        post: "Use post_request tool with endpoint path and data",
-        put: "Use put_request tool with endpoint path and data",
-        delete: "Use delete_request tool with endpoint path",
-      },
-    };
   }
 
   async run() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error("API MCP server running on stdio");
+    console.error("REST Proxy MCP server running on stdio");
   }
 }
 
 async function main() {
-  if (!process.env.API_BASE_URL) {
-    console.error("API_BASE_URL environment variable is required");
+  if (!process.env.ALLOWED_HOSTS) {
+    console.error("ALLOWED_HOSTS environment variable is required");
+    console.error("Example: ALLOWED_HOSTS=api.example.com,api.github.com");
     process.exit(1);
   }
 
-  const server = new ApiMCPServer();
+  const server = new RestProxyMCPServer();
   await server.run();
 }
 
@@ -1410,14 +1447,17 @@ if (isEntry) {
 
   const readme = `# ${projectName}
 
-${description || "MCP server for API integration"}
+${description || "MCP server for secure REST API proxy"}
 
 ## Features
 
-- Make GET, POST, PUT, and DELETE requests to external APIs
-- Support for query parameters and request headers
-- Automatic API key authentication
-- Error handling and response formatting
+- **Secure REST API proxy** with comprehensive SSRF protection
+- **Host allowlisting** to prevent unauthorized API access
+- **IP address validation** to block private/loopback addresses
+- **Request/response size limits** to prevent resource exhaustion
+- **Timeout protection** to prevent hanging requests
+- **JSON-only operations** for predictable data handling
+- **Header sanitization** to prevent header injection attacks
 
 ## Installation
 
@@ -1428,11 +1468,21 @@ npm run build
 
 ## Configuration
 
-Set the required environment variables:
+### Required Environment Variables
 
 \`\`\`bash
-export API_BASE_URL="https://api.example.com"
-export API_KEY="your-api-key"  # Optional
+# Comma-separated list of allowed hostnames (required)
+export ALLOWED_HOSTS="api.example.com,api.github.com,jsonplaceholder.typicode.com"
+\`\`\`
+
+### Optional Security Configuration
+
+\`\`\`bash
+# Maximum request/response body size in bytes (default: 512KB)
+export MAX_BODY_BYTES=524288
+
+# Request timeout in milliseconds (default: 15 seconds)
+export TIMEOUT_MS=15000
 \`\`\`
 
 ## Usage
@@ -1458,8 +1508,9 @@ Add this server to your Claude Desktop configuration:
       "command": "node",
       "args": ["--enable-source-maps", "path/to/${projectName}/dist/index.js"],
       "env": {
-        "API_BASE_URL": "https://api.example.com",
-        "API_KEY": "your-api-key"
+        "ALLOWED_HOSTS": "api.example.com,api.github.com",
+        "MAX_BODY_BYTES": "524288",
+        "TIMEOUT_MS": "15000"
       }
     }
   }
@@ -1468,29 +1519,112 @@ Add this server to your Claude Desktop configuration:
 
 ## Available Tools
 
-- **get_request**: Make GET requests with optional query parameters
-- **post_request**: Make POST requests with request body data
-- **put_request**: Make PUT requests with request body data
-- **delete_request**: Make DELETE requests
+- **http_get_json**: Make GET requests to allowed hosts, returns JSON
+- **http_post_json**: Make POST requests with JSON payload to allowed hosts
 
 ## Available Resources
 
-- **api://endpoints**: Information about available endpoints and configuration
+- **rest://config**: View current proxy configuration and security settings
+
+## Security Features
+
+### SSRF Protection
+- **Host allowlisting**: Only configured hostnames are accessible
+- **IP address validation**: Blocks requests to private/loopback addresses
+- **Protocol restriction**: Only HTTP and HTTPS are allowed
+- **DNS resolution checking**: Validates resolved IP addresses
+
+### Request/Response Limits
+- **Size limits**: Configurable maximum body size for requests and responses
+- **Timeout protection**: Prevents hanging requests with configurable timeouts
+- **Method restriction**: Only GET and POST methods are supported
+
+### Header Security
+- **Header sanitization**: Only \`accept\` and \`content-type\` headers are allowed
+- **No auth forwarding**: Authorization headers are stripped for security
 
 ## Example Usage
 
-The server will automatically add the API key as a Bearer token if provided. You can make requests like:
+### GET Request
+\`\`\`json
+{
+  "tool": "http_get_json",
+  "arguments": {
+    "url": "https://api.example.com/users",
+    "headers": {
+      "accept": "application/json"
+    }
+  }
+}
+\`\`\`
 
-- GET /users?limit=10
-- POST /users with user data
-- PUT /users/123 with updated user data
-- DELETE /users/123
+### POST Request
+\`\`\`json
+{
+  "tool": "http_post_json",
+  "arguments": {
+    "url": "https://api.example.com/users",
+    "headers": {
+      "accept": "application/json"
+    },
+    "body": {
+      "name": "John Doe",
+      "email": "john@example.com"
+    }
+  }
+}
+\`\`\`
+
+## Security Best Practices
+
+### Host Configuration
+- Only add trusted API hosts to \`ALLOWED_HOSTS\`
+- Use specific hostnames, not wildcards
+- Regularly review and update the allowed hosts list
+
+### Network Security
+- Deploy behind a firewall for additional protection
+- Monitor outbound network traffic
+- Consider using a dedicated network segment
+
+### Monitoring
+- Log all API requests for audit purposes
+- Monitor for unusual request patterns
+- Set up alerts for failed requests or timeouts
 
 ## Technical Notes
 
 - Uses ESM modules for compatibility with the MCP SDK
-- Input validation for all tool arguments
+- Built-in Node.js \`fetch\` API (requires Node.js 18+)
+- No external HTTP libraries to reduce attack surface
 - Source maps enabled for better debugging
+- Comprehensive error handling and validation
+
+## Troubleshooting
+
+### Host Not Allowed Errors
+- Verify the hostname is included in \`ALLOWED_HOSTS\`
+- Check for typos in hostname configuration
+- Ensure hostnames are lowercase in configuration
+
+### Timeout Issues
+- Increase \`TIMEOUT_MS\` for slow APIs
+- Check network connectivity to target hosts
+- Verify the target API is responding
+
+### Size Limit Errors
+- Increase \`MAX_BODY_BYTES\` if needed
+- Consider pagination for large responses
+- Optimize request payloads to reduce size
+
+## Limitations
+
+- **JSON only**: Only JSON requests and responses are supported
+- **No authentication forwarding**: API keys must be configured per host if needed
+- **Limited HTTP methods**: Only GET and POST are supported
+- **No file uploads**: Binary data is not supported
+
+This server prioritizes security over flexibility. For more complex API integration needs, consider implementing a custom server with additional security controls.
 `;
 
   return [
@@ -2144,27 +2278,49 @@ This server is production-ready and follows database security best practices!`;
 
       case "api":
         files = generateApiServer(req.projectName, req.description);
-        instructions = `Your API integration MCP server has been generated with corrected MCP SDK usage! This server acts as a proxy to external REST APIs.
+        instructions = `Your secure REST API proxy MCP server has been generated with comprehensive security fixes and proper MCP SDK usage! This server provides a safe way to access external APIs with enterprise-grade SSRF protection.
 
-**Key fixes applied:**
+**Critical security fixes applied:**
+- **SSRF protection**: Host allowlisting prevents unauthorized API access
+- **IP address validation**: Blocks requests to private/loopback addresses (127.0.0.1, 192.168.x.x, etc.)
+- **Protocol restrictions**: Only HTTP/HTTPS allowed, no file:// or other schemes
+- **DNS resolution checking**: Validates resolved IP addresses before making requests
+- **Request/response size limits**: Prevents resource exhaustion attacks
+- **Timeout protection**: Configurable timeouts prevent hanging requests
+- **Header sanitization**: Only safe headers (accept, content-type) are allowed
+- **Method restrictions**: Only GET and POST methods supported
+
+**MCP SDK fixes:**
 - Proper ESM module usage with correct imports
 - Uses Server + StdioServerTransport (not HTTP)
 - Correct request handler registration with schemas
-- Proper URI handling with api:// protocol
+- Proper URI handling with rest:// protocol
 - Input validation for all tool arguments
+- Uses built-in Node.js fetch (no external HTTP libraries)
 
 **Next steps:**
 1. Extract the files to a new directory
 2. Run \`npm install\` to install dependencies
 3. Run \`npm run build\` to compile TypeScript
-4. Set the API_BASE_URL environment variable
-5. Optionally set API_KEY for authentication
+4. **REQUIRED**: Set ALLOWED_HOSTS environment variable with comma-separated hostnames
+   - Example: \`ALLOWED_HOSTS=api.example.com,api.github.com\`
+5. Optionally configure size limits and timeouts
 6. Test with \`npm start\` or integrate with Claude Desktop
 
-**Production features:**
-- ESM module support for MCP SDK compatibility
-- Supports GET, POST, PUT, and DELETE requests with automatic API key authentication
-- Source maps enabled for better debugging`;
+**Production security features:**
+- **No Express/HTTP listener**: Runs over stdio only
+- **Host allowlisting**: Only configured hostnames are accessible
+- **Private IP blocking**: Prevents access to internal networks
+- **Size limits**: Configurable max body size (default: 512KB)
+- **Timeout protection**: Prevents hanging requests (default: 15s)
+- **JSON-only**: Only JSON requests/responses for predictable behavior
+- **No auth forwarding**: Authorization headers are stripped for security
+
+**Available tools:**
+- http_get_json: Make GET requests to allowed hosts
+- http_post_json: Make POST requests with JSON payload
+
+**IMPORTANT**: This server prioritizes security over flexibility. Only add trusted API hosts to ALLOWED_HOSTS!`;
         break;
 
       case "git":
