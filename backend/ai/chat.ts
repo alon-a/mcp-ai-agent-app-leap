@@ -50,17 +50,83 @@ MCP is a protocol that enables AI assistants to securely access external data so
 
 ## MCP Server Implementation
 MCP servers typically:
-1. Implement the MCP protocol using libraries like @modelcontextprotocol/sdk
-2. Define available resources, tools, and prompts
-3. Handle client requests and return appropriate responses
-4. Manage authentication and permissions
+1. Use the official @modelcontextprotocol/sdk package
+2. Import { Server } from "@modelcontextprotocol/sdk/server/index.js"
+3. Use StdioServerTransport for communication over stdio
+4. Define request handlers for ListToolsRequestSchema, CallToolRequestSchema, etc.
+5. Use proper ESM module syntax with "type": "module" in package.json
+6. Handle client requests and return appropriate responses
+7. Manage authentication and permissions
+
+## Correct MCP Server Structure
+\`\`\`typescript
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+
+const server = new Server(
+  { name: "my-server", version: "1.0.0" },
+  { capabilities: { tools: {}, resources: {} } }
+);
+
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return {
+    tools: [
+      {
+        name: "my_tool",
+        description: "Description of what the tool does",
+        inputSchema: {
+          type: "object",
+          properties: {
+            param: { type: "string", description: "Parameter description" }
+          },
+          required: ["param"]
+        }
+      }
+    ]
+  };
+});
+
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+  
+  switch (name) {
+    case "my_tool":
+      // Tool implementation
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Tool response"
+          }
+        ]
+      };
+    default:
+      throw new Error(\\\`Unknown tool: \\\${name}\\\`);
+  }
+});
+
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("Server running on stdio");
+}
+
+main().catch(console.error);
+\`\`\`
 
 ## MCP Client Implementation
 MCP clients:
-1. Connect to one or more MCP servers
-2. Discover available resources, tools, and prompts
-3. Make requests to servers based on user needs
-4. Present results to users or AI models
+1. Use { Client } from "@modelcontextprotocol/sdk/client/index.js"
+2. Use StdioClientTransport to connect to servers
+3. Discover available resources, tools, and prompts
+4. Make requests to servers based on user needs
+5. Present results to users or AI models
 
 ## Common Use Cases
 - Database integration (read/write operations)
@@ -70,14 +136,32 @@ MCP clients:
 - Git repository access
 - Cloud service management
 
-When helping users, provide:
-1. Clear, working code examples
-2. Proper error handling
-3. Security best practices
-4. Configuration guidance
-5. Testing strategies
+## Security Best Practices
+- Always validate and sanitize inputs
+- Use allowlists for hosts, schemas, and paths
+- Implement proper error handling
+- Use timeouts and resource limits
+- Never expose sensitive credentials
+- Validate file paths to prevent directory traversal
+- Use parameterized queries for databases
+- Implement SSRF protection for API proxies
 
-Focus on practical, implementable solutions that follow MCP best practices.`;
+## Important Notes
+- MCP servers communicate over stdio, not HTTP (unless using specific HTTP transports)
+- There is NO createServer() function in the SDK - use new Server()
+- Always use ESM modules ("type": "module") for compatibility
+- Use proper request handler schemas from the SDK
+- Tool responses must be wrapped in { content: [...] } format
+- Use latest SDK version ^1.11.1 or newer
+
+When helping users, provide:
+1. Clear, working code examples using the correct SDK APIs
+2. Proper error handling and security measures
+3. Complete file contents without placeholders
+4. Configuration guidance with environment variables
+5. Testing strategies using MCP Inspector
+
+Focus on practical, implementable solutions that follow MCP best practices and use the official SDK correctly.`;
 
 // Provides AI-powered assistance for MCP development.
 export const chat = api<ChatRequest, ChatResponse>(
