@@ -1,0 +1,16 @@
+{
+  "template": "python-fastmcp",
+  "custom_settings": {
+    "server_name": "My FastMCP Server",
+    "server_version": "1.0.0",
+    "transport": "stdio"
+  },
+  "environment_variables": {
+    "DEBUG": "false",
+    "LOG_LEVEL": "info"
+  },
+  "additional_dependencies": [
+    "requests>=2.31.0",
+    "pydantic>=2.0.0"
+  ]
+}

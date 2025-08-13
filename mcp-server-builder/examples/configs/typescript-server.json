@@ -1,0 +1,19 @@
+{
+  "template": "typescript-sdk",
+  "custom_settings": {
+    "server_name": "TypeScript MCP Server",
+    "server_version": "1.0.0",
+    "transport": "stdio",
+    "build_target": "es2020",
+    "enable_sourcemaps": true
+  },
+  "environment_variables": {
+    "NODE_ENV": "production",
+    "LOG_LEVEL": "info"
+  },
+  "additional_dependencies": [
+    "axios",
+    "lodash",
+    "@types/lodash"
+  ]
+}

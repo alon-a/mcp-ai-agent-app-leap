@@ -1,0 +1,12 @@
+{
+  "template": "python-fastmcp",
+  "custom_settings": {
+    "server_name": "Basic Python MCP Server",
+    "server_version": "1.0.0",
+    "transport": "stdio"
+  },
+  "environment_variables": {
+    "LOG_LEVEL": "info"
+  },
+  "additional_dependencies": []
+}

@@ -1,0 +1,18 @@
+template: python-fastmcp
+custom_settings:
+  server_name: Advanced Python MCP Server
+  server_version: 2.0.0
+  transport: http
+  enable_auth: true
+  max_connections: 100
+environment_variables:
+  DEBUG: "true"
+  LOG_LEVEL: debug
+  API_KEY: your-api-key-here
+  DATABASE_URL: sqlite:///server.db
+additional_dependencies:
+  - requests>=2.31.0
+  - sqlalchemy>=2.0.0
+  - fastapi>=0.100.0
+  - uvicorn>=0.23.0
+  - python-dotenv>=1.0.0
