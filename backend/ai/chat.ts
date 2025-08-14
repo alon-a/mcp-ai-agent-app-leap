@@ -1,8 +1,8 @@
 import { api } from "encore.dev/api";
+import { secret } from "encore.dev/config";
 import OpenAI from "openai";
 
-// Get OpenAI API key from environment variable
-const openAIKey = process.env.OPENAI_API_KEY;
+const openAIKey = secret("OpenAIKey");
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -17,13 +17,8 @@ interface ChatResponse {
   message: ChatMessage;
 }
 
-// Validate that the API key is provided
-if (!openAIKey) {
-  throw new Error("OPENAI_API_KEY environment variable is required but not set");
-}
-
 const openai = new OpenAI({
-  apiKey: openAIKey,
+  apiKey: openAIKey(),
 });
 
 const SYSTEM_PROMPT = `You are an expert AI assistant specialized in helping developers create MCP (Model Context Protocol) Servers and Clients. 
