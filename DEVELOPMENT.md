@@ -16,6 +16,59 @@ You also need to have bun installed for package management. If you don't have bu
 npm install -g bun
 ```
 
+## Environment Setup
+
+Before running the application, you need to set up your environment variables:
+
+1. **OpenAI API Key**: The application requires an OpenAI API key for AI-powered features. Set the environment variable:
+   ```bash
+   export OPENAI_API_KEY="your-openai-api-key-here"
+   ```
+   
+   You can get an API key from [OpenAI's platform](https://platform.openai.com/api-keys).
+
+2. **Python API Configuration** (Optional): If you're using the Python bridge service, you can configure:
+   ```bash
+   export PYTHON_API_URL="http://localhost:8000"  # Default if not set
+   export PYTHON_API_KEY="your-python-api-key"    # Optional
+   ```
+
+### Setting Environment Variables
+
+**On macOS/Linux:**
+```bash
+export OPENAI_API_KEY="your-openai-api-key-here"
+export PYTHON_API_URL="http://localhost:8000"
+export PYTHON_API_KEY="your-python-api-key"
+```
+
+**On Windows (Command Prompt):**
+```cmd
+set OPENAI_API_KEY=your-openai-api-key-here
+set PYTHON_API_URL=http://localhost:8000
+set PYTHON_API_KEY=your-python-api-key
+```
+
+**On Windows (PowerShell):**
+```powershell
+$env:OPENAI_API_KEY="your-openai-api-key-here"
+$env:PYTHON_API_URL="http://localhost:8000"
+$env:PYTHON_API_KEY="your-python-api-key"
+```
+
+**Using a .env file** (recommended for development):
+Copy the example environment file and customize it:
+```bash
+cp .env.example .env
+```
+
+Then edit the `.env` file with your actual values:
+```env
+OPENAI_API_KEY=your-openai-api-key-here
+PYTHON_API_URL=http://localhost:8000
+PYTHON_API_KEY=your-python-api-key
+```
+
 ## Running the Application
 
 ### Backend Setup
@@ -25,7 +78,9 @@ npm install -g bun
    cd backend
    ```
 
-2. Start the Encore development server:
+2. Make sure your environment variables are set (see Environment Setup above)
+
+3. Start the Encore development server:
    ```bash
    encore run
    ```
@@ -62,6 +117,109 @@ encore gen client --target leap
 ```
 
 ## Deployment
+
+### Netlify Deployment
+
+The application can be easily deployed to Netlify with proper environment variable configuration.
+
+> 📖 **Detailed Guide**: See [NETLIFY_DEPLOYMENT.md](NETLIFY_DEPLOYMENT.md) for a comprehensive step-by-step guide.
+
+#### Method 1: Netlify Dashboard (Recommended)
+
+1. **Connect Your Repository**:
+   - Go to [Netlify Dashboard](https://app.netlify.com/)
+   - Click "New site from Git"
+   - Connect your GitHub/GitLab/Bitbucket repository
+
+2. **Configure Build Settings**:
+   - **Build command**: `npm run build` (or your specific build command)
+   - **Publish directory**: `dist` (or your build output directory)
+   - **Base directory**: Leave empty or specify if needed
+
+3. **Set Environment Variables**:
+   - Go to Site settings → Environment variables
+   - Add the following variables:
+     ```
+     OPENAI_API_KEY = your-openai-api-key-here
+     PYTHON_API_URL = https://your-python-api-url.com
+     PYTHON_API_KEY = your-python-api-key-here
+     ```
+
+4. **Deploy**:
+   - Click "Deploy site"
+   - Netlify will automatically build and deploy your application
+
+#### Method 2: Netlify CLI
+
+1. **Install Netlify CLI**:
+   ```bash
+   npm install -g netlify-cli
+   ```
+
+2. **Login to Netlify**:
+   ```bash
+   netlify login
+   ```
+
+3. **Initialize your site**:
+   ```bash
+   netlify init
+   ```
+
+4. **Set environment variables**:
+   ```bash
+   netlify env:set OPENAI_API_KEY "your-openai-api-key-here"
+   netlify env:set PYTHON_API_URL "https://your-python-api-url.com"
+   netlify env:set PYTHON_API_KEY "your-python-api-key-here"
+   ```
+
+5. **Deploy**:
+   ```bash
+   netlify deploy --prod
+   ```
+
+#### Method 3: netlify.toml Configuration
+
+Create a `netlify.toml` file in your project root:
+
+```toml
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "18"
+
+# Redirect all requests to index.html for SPA routing
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Security headers
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-XSS-Protection = "1; mode=block"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+```
+
+Then set environment variables through the Netlify dashboard as described in Method 1.
+
+#### Environment Variables Security
+
+- **Never commit API keys**: Environment variables are securely stored by Netlify
+- **Use different keys for different environments**: Consider separate keys for staging/production
+- **Rotate keys regularly**: Update your API keys periodically for security
+
+#### Troubleshooting Netlify Deployment
+
+1. **Build fails**: Check the build logs in Netlify dashboard
+2. **Environment variables not working**: Ensure they're set in Site settings → Environment variables
+3. **API calls failing**: Verify your API endpoints are accessible from Netlify's servers
+4. **CORS issues**: Configure your backend to allow requests from your Netlify domain
 
 ### Self-hosting
 See the [self-hosting instructions](https://encore.dev/docs/self-host/docker-build) for how to use encore build docker to create a Docker image and

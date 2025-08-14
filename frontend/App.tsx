@@ -1,56 +1,41 @@
-import { useState } from "react";
+import React from "react";
+import { AppShell, useNavigation } from "./components/AppShell";
 import { ChatInterface } from "./components/ChatInterface";
-import { Header } from "./components/Header";
-import { Sidebar } from "./components/Sidebar";
 import { TestimonialsPage } from "./components/TestimonialsPage";
-import { Toaster } from "@/components/ui/toaster";
+import { HomePage } from "./components/HomePage";
+import { ProjectsPage } from "./components/ProjectsPage";
+import { TemplatesPage } from "./components/TemplatesPage";
+import { AdvancedBuildInterface } from "./components/AdvancedBuildInterface";
+
+function AppContent() {
+  const { currentPage, currentMode } = useNavigation();
+
+  const renderPage = () => {
+    switch (currentPage) {
+      case 'home':
+        return <HomePage />;
+      case 'chat':
+        return <ChatInterface />;
+      case 'advanced-build':
+        return <AdvancedBuildInterface />;
+      case 'projects':
+        return <ProjectsPage />;
+      case 'templates':
+        return <TemplatesPage />;
+      case 'testimonials':
+        return <TestimonialsPage />;
+      default:
+        return <HomePage />;
+    }
+  };
+
+  return renderPage();
+}
 
 export default function App() {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [currentPage, setCurrentPage] = useState<"chat" | "testimonials">("chat");
-
-  const handleLogoClick = () => {
-    setCurrentPage("chat");
-  };
-
-  const handleNavigateToTestimonials = () => {
-    setCurrentPage("testimonials");
-    setSidebarOpen(false);
-  };
-
-  const handleNavigateToChat = () => {
-    setCurrentPage("chat");
-  };
-
   return (
-    <div className="flex h-screen bg-gray-50">
-      <Sidebar 
-        isOpen={sidebarOpen} 
-        onClose={() => setSidebarOpen(false)}
-        onNavigateToTestimonials={handleNavigateToTestimonials}
-        onNavigateToChat={handleNavigateToChat}
-        currentPage={currentPage}
-      />
-      
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header 
-          onMenuClick={() => setSidebarOpen(true)} 
-          onLogoClick={handleLogoClick}
-          onNavigateToTestimonials={handleNavigateToTestimonials}
-          onNavigateToChat={handleNavigateToChat}
-          currentPage={currentPage}
-        />
-        
-        <main className="flex-1 overflow-hidden">
-          {currentPage === "chat" ? (
-            <ChatInterface />
-          ) : (
-            <TestimonialsPage />
-          )}
-        </main>
-      </div>
-      
-      <Toaster />
-    </div>
+    <AppShell>
+      <AppContent />
+    </AppShell>
   );
 }
