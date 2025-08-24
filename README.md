@@ -2,6 +2,8 @@
 
 A comprehensive AI-powered assistant for building Model Context Protocol (MCP) servers and clients. This application provides an interactive chat interface, code generators, and expert guidance for MCP development.
 
+⭐ If you find this project helpful or useful, please give it a star in the upper right hand corner! It helps others discover MCP-Assistant
+
 ## Features
 
 ### 🤖 AI Chat Assistant
